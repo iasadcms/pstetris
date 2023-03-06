@@ -6,7 +6,7 @@ Tetris for PowerShell
 
 Download and then execute pstetris.ps1.
 
-Use arrow keys - left, right, down, up == rotate  Escape == quit
+Use arrow keys - left, right, down, up == rotate. Escape == quit
 
 Enjoy!
 
