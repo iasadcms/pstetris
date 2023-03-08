@@ -45,6 +45,8 @@ $CHAR_ARROWDOWN = [char]9660
 
 
 # win32 type lib - helps remove blinking cursor
+if ("Win32" -as [type]) { } 
+else {
 Add-Type -TypeDefinition @"
     using System;
     using System.Diagnostics;
@@ -66,6 +68,13 @@ Add-Type -TypeDefinition @"
         }
     }
 "@
+}
+
+if ("TrustAllCertsPolicy" -as [type]) {} else {
+    Add-Type "using System.Net;using System.Security.Cryptography.X509Certificates;public class TrustAllCertsPolicy : ICertificatePolicy {public bool CheckValidationResult(ServicePoint srvPoint, X509Certificate certificate, WebRequest request, int certificateProblem) {return true;}}"
+    [System.Net.ServicePointManager]::CertificatePolicy = New-Object TrustAllCertsPolicy
+}
+
 $global:hStdOut = [win32]::GetStdHandle(-11)
 $global:CursorInfo = New-Object Win32+CONSOLE_CURSOR_INFO
 
@@ -951,9 +960,6 @@ function DoMainMenu() {
     [bool]$allowtopscoreonscreen = $true
    
     function Paint {
-    param(
-        [switch]$NoPrint        # only draw on conbuff, don't print at the end.
-    )
         # background and title
         ClearConBuff
         ConBuffCopyFrom -Source $FancyBackground
@@ -968,7 +974,7 @@ function DoMainMenu() {
             if ($allowtopscoreonscreen -and ($global:GameData_TopScore -gt 0)) {
                 [string]$scoreStr = $global:GameData_TopScore.ToString()
                 $scoreStr = "TopScore: " + $scoreStr
-                ConBuffWrite -Text $scoreStr -x (($CONBUFF_WIDTH / 2) - ($scoreStr.Length / 2)) -y 14 -ForeColour $FORECOLOUR_SCORE -BackColour $BACKCOLOUR_SCORE
+                ConBuffWrite -Text $scoreStr -x (($CONBUFF_WIDTH / 2) - ($scoreStr.Length / 2)) -y 14 -ForeColour $FORECOLOUR_SCORE -BackColour $BACKCOLOUR_BACKGROUND
             }
             # draw menu items
             ConBuffWrite -Text "   New A Game" -x $menux -y $menuy -ForeColour $FORECOLOUR_MENU -BackColour $BACKCOLOUR_MENU 
@@ -986,15 +992,7 @@ function DoMainMenu() {
             ConBuffWrite -Text "ESC   Quit" -x ($menux + 1) -y ($menuy + 4) -ForeColour $FORECOLOUR_MENU -BackColour $BACKCOLOUR_MENU 
         }
 
-        if (-not $NoPrint.IsPresent) {
-            if ($lastpaintmode -ne $Mode) { 
-                PrintConBuff -Force
-                $lastpaintmode = $Mode
-            }
-            else {
-                PrintConBuff
-            }
-        }
+        PrintConBuff
     }
 
     Paint
@@ -1004,8 +1002,7 @@ function DoMainMenu() {
         if ($topscorems - $lasttopscorems -gt 1000) {
             $lasttopscorems = $topscorems
             $allowtopscoreonscreen = !$allowtopscoreonscreen
-            Paint -NoPrint
-            PrintConBuff -Force
+            $updatereq = $true
         }
         if ([Console]::KeyAvailable) {
             $key = [Console]::ReadKey($false)
@@ -1332,7 +1329,7 @@ try {
     # init
     
     SetCursorVisible -Visible $false
-    ClearConBuff
+    #ClearConBuff
     UpdateLastConBuff
     PrintConBuff
 
