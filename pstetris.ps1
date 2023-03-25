@@ -496,7 +496,7 @@ $AllGameData[[GameType]::AGame].Name = "A-Type"
 
 function ResetGameData {
 <# resets game data #>
-    $global:GameData = $global:AllGameData[[GameType]::AGame]
+    $GameData = $AllGameData[[GameType]::AGame]
     $GameData.Score = 0
     $GameData.Level = 1
     $GameData.Lines = 0
