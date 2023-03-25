@@ -1,31 +1,47 @@
 <#
 .SYNOPSIS
-    PowerShell Tetris
-
+    PowerShell Tetris    
 .DESCRIPTION
     Quick and dirty PowerShell Tetris
-
     Use arrow keys - left, right, down, up == rotate.
     Escape == quit
-
     No music
 #>
 
 
-$CONBUFF_WIDTH = 36                 # width of the console buffer
-$CONBUFF_HEIGHT = 27                # height of the console buffer
-$GAMEAREA_WIDTH = 10                # width of the tetris game area
-$GAMEAREA_HEIGHT = 18               # height of the tetris game area
+$CONBUFF_WIDTH = 36
+$CONBUFF_HEIGHT = 27
 
 
 $FORECOLOUR_BACKGROUND = 'Cyan';        $BACKCOLOUR_BACKGROUND = 'DarkGray'
-$FORECOLOUR_BORDER = 'Cyan';            $BACKCOLOUR_BORDER = 'Black'
-$FORECOLOUR_GAMETEXT = 'White';         $BACKCOLOUR_GAMETEXT = 'Black'
 $FORECOLOUR_TITLE = 'White';            $BACKCOLOUR_TITLE = 'Black'
 $FORECOLOUR_TITLESHADOW = 'DarkGray';   $BACKCOLOUR_TITLESHADOW = 'Black'
 $FORECOLOUR_SCORE = 'White';            $BACKCOLOUR_SCORE = 'Black'
+$FORECOLOUR_BORDER = 'Cyan';            $BACKCOLOUR_BORDER = 'Black'
 $FORECOLOUR_MENU = 'White';             $BACKCOLOUR_MENU = 'Black'
+$FORECOLOUR_GAMETEXT = 'White';         $BACKCOLOUR_GAMETEXT = 'Black'
 $BACKCOLOUR_GAMEAREA = 'Black'
+
+
+$MAINMENU_TOPSCORE_BLINKMS = 1000           # how fast top score blinks on the main menu
+
+
+#######################################################################################################
+# Misc
+#######################################################################################################
+
+
+$Stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+
+
+
+#######################################################################################################
+# Console
+#######################################################################################################
+
+
+$SAVED_FORECOLOUR = [console]::ForegroundColor
+$SAVED_BACKCOLOUR = [console]::BackgroundColor 
 
 
 $CHAR_SOLIDBLOCK = [char]9608
@@ -39,10 +55,13 @@ $CHAR_ARROWUP = [char]9650
 $CHAR_ARROWDOWN = [char]9660
 
 
-#######################################################################################################
-# Cursor
-#######################################################################################################
-
+function ClearKeyboardBuffer {
+<# clears the keyboard buffer #>
+    while (([Console]::KeyAvailable)) {
+        [void][Console]::ReadKey($false)
+    }
+}
+    
 
 # win32 type lib - helps remove blinking cursor
 if ("Win32" -as [type]) { } 
@@ -87,6 +106,9 @@ function GetCursorVisible {
 }
 
 
+$SAVED_CURSORVISIBLE = GetCursorVisible
+
+
 function SetCursorVisible {
 param(
     [bool]$Visible = $true
@@ -98,203 +120,99 @@ param(
 }
 
 
-function SetCursorPos {
-    <# sets the console cursor at x, y #>
-param(
-    $x, 
-    $y
-)    
-    $x = [System.Math]::Max([System.Math]::Min($x, [console]::WindowWidth - 1), 0)
-    $y = [System.Math]::Max([System.Math]::Min($y, [console]::WindowHeight - 1), 0)
-    [Console]::SetCursorPosition($x, $y);
+
+#######################################################################################################
+# console buffer
+#######################################################################################################
+
+
+$CONBUFF_SIZE = ($CONBUFF_WIDTH * $CONBUFF_HEIGHT)                      # size of the virtual console arrays (w x h)
+
+function NewConBuffObject {
+<# creates a new object to store console buffer info #>
+    $Result = [pscustomobject]@{
+        Buffer = (New-Object int[]($CONBUFF_SIZE))                       # the current buffer we'll print
+        ForeColours = (New-Object int[]($CONBUFF_SIZE))                  # forground colours
+        BackColours = (New-Object int[]($CONBUFF_SIZE))                  # background colours
+    }
+    return $Result
 }
 
 
+# our virtual console vars
+$ConBuff = NewConBuffObject                                             # our virtual console
+$LastConBuff = NewConBuffObject                                         # the last console printed on screen
 
 
-#######################################################################################################
-# Keyboard
-#######################################################################################################
+function ResetLastConBuff {
+<# sets LastConBuff to values that likely force a print during the next call to PrintConBuff #>
+    for ($idx = 0; $idx -lt $LastConBuff.Buffer.Length; $idx++) { $LastConBuff.Buffer[$idx] = 365 }
+}
 
 
-function ClearKeyboardBuffer {
-<# clears the keyboard buffer #>
-    while (([Console]::KeyAvailable)) {
-        [void][Console]::ReadKey($false)
+function ClearConBuff {
+<# clears ConBuff, by setting every char to "space", with saved foreground and background colours #>
+    for ($idx = 0; $idx -lt $LastConBuff.Buffer.Length; $idx++) { 
+        $ConBuff.Buffer[$idx] = 32
+        $ConBuff.ForeColours[$idx] = $SAVED_FORECOLOUR
+        $ConBuff.BackColours[$idx] = $SAVED_BACKCOLOUR
     }
 }
 
 
-
-
-#######################################################################################################
-# Screen Updates
-#######################################################################################################
-
-
-function ConsoleWriteAt {
-<# writes text to the console screen in using forecolour, and backcolour, at position x, y #>
-param(
-    [string]$Text,
-    [ConsoleColor]$ForeColour = $SavedForeColour,
-    [ConsoleColor]$BackColour = $SavedBackColour,
-    [int]$x,
-    [int]$y
-)
-    SetCursorPos -x $x -y $y
-    [Console]::BackgroundColor = $BackColour
-    [Console]::ForegroundColor = $ForeColour        
-    [Console]::Write($Text)
-}
-
-
-
-
-#######################################################################################################
-# Virtual screen
-#######################################################################################################
-
-
-$CONBUFF_IDX_VALUE = 0
-$CONBUFF_IDX_FORECOL = 1
-$CONBUFF_IDX_BACKCOL = 2
-$CONBUFF_IDX_LENGTH = ($CONBUFF_IDX_BACKCOL + 1)
-
-# this is our virtual screen, and a copy of it 
-$global:ConBuff = New-Object 'System.Object[,,]'($CONBUFF_WIDTH, $CONBUFF_HEIGHT, $CONBUFF_IDX_LENGTH)
-$global:LastPrintedConBuff = New-Object 'System.Object[,,]'($CONBUFF_WIDTH, $CONBUFF_HEIGHT, $CONBUFF_IDX_LENGTH)
-for ($x = 0; $x -lt $CONBUFF_WIDTH; $x++) {
-    for ($y = 0; $y -lt $CONBUFF_HEIGHT; $y++) {
-        $global:LastPrintedConBuff[$x, $y, $CONBUFF_IDX_VALUE] = [char]365   # random char chosen to invalidate LastConBuff
+function CopyToConBuff($Source) {
+<# copies source buff on to $ConBuff #>
+    for ($idx = 0; $idx -lt $CONBUFF_SIZE; $idx++) {
+        $ConBuff.Buffer[$idx] = $Source.Buffer[$idx]
+        $ConBuff.ForeColours[$idx] = $Source.ForeColours[$idx]
+        $ConBuff.BackColours[$idx] = $Source.BackColours[$idx]
     }
 }
-
-
-function UpdateLastConBuff() {
-<# Copies $global:ConBuff in to $global:LastPrintedConBuff - PrintConBuff only updates differences between the two, unless forced #>
-    for ($x = 0; $x -lt $CONBUFF_WIDTH; $x++) {
-        for ($y = 0; $y -lt $CONBUFF_HEIGHT; $y++) {
-            $global:LastPrintedConBuff[$x, $y, $CONBUFF_IDX_VALUE] = $global:ConBuff[$x, $y, $CONBUFF_IDX_VALUE]
-            $global:LastPrintedConBuff[$x, $y, $CONBUFF_IDX_FORECOL] = $global:ConBuff[$x, $y, $CONBUFF_IDX_FORECOL]
-            $global:LastPrintedConBuff[$x, $y, $CONBUFF_IDX_BACKCOL] = $global:ConBuff[$x, $y, $CONBUFF_IDX_BACKCOL]
-        }
-    }
-}
-
-
+    
+    
 function ConBuffWrite {
-<# writes text to $global:ConBuff, starting at position x, y #>
+<# writes text to $ConBuff, starting at position x, y. #>
 param(
-    [string]$Text,
     [int]$x,
     [int]$y,
-    [ConsoleColor]$ForeColour = $SavedForeColour,
-    [ConsoleColor]$BackColour = $SavedBackColour
+    [string]$Text,
+    [ConsoleColor]$ForeColour,
+    [ConsoleColor]$BackColour
 )    
-if ($y -lt 0) { return }
-if ($y -ge $CONBUFF_HEIGHT) { return }
-for ($pos = 0; $pos -lt $Text.Length; $pos++) {
-        $xpos = $x + $pos
-        if ($xpos -lt 0) { break }
-        if ($xpos -ge $CONBUFF_WIDTH) { break }
-        $global:ConBuff[$xpos, $y, $CONBUFF_IDX_VALUE] = $Text[$pos]
-        $global:ConBuff[$xpos, $y, $CONBUFF_IDX_FORECOL] = $ForeColour
-        $global:ConBuff[$xpos, $y, $CONBUFF_IDX_BACKCOL] = $BackColour
+    if (($y -lt 0) -or ($y -ge $CONBUFF_HEIGHT)) { return }
+    $ypos = $y * $CONBUFF_WIDTH
+    for ($dx = 0; $dx -lt $Text.Length; $dx++) {
+        $idx = $ypos + $x + $dx
+        if ($idx -lt 0) { continue }
+        if ($idx -ge $CONBUFF_SIZE) { break }
+        $ConBuff.Buffer[$idx] = $Text[$dx]
+        $ConBuff.ForeColours[$idx] = $ForeColour
+        $ConBuff.BackColours[$idx] = $BackColour
     }
 }
 
 
-function ClearConBuff() {
-<# CLS, but for $global:ConBuff #>
-    for ($x = 0; $x -lt $CONBUFF_WIDTH; $x++) {
-        for ($y = 0; $y -lt $CONBUFF_HEIGHT; $y++) {
-            $global:ConBuff[$x, $y, $CONBUFF_IDX_VALUE] = " "
-            $global:ConBuff[$x, $y, $CONBUFF_IDX_FORECOL] = $SavedForeColour
-            $global:ConBuff[$x, $y, $CONBUFF_IDX_BACKCOL] = $SavedBackColour
-        }
-    }    
-}
-
-
-function PrintConBuff {
-<# displays $global:ConBuff in the console window #>
+function ConBuffDrawFromMask {
+<# draws char on conbuff, where the value in Mask isn't whitespace #>
 param(
-    [switch]$Force,                   # if not set, only changes are updated
-    [switch]$NoCursorReset            # cursor is not reset to pos it was at entry 
+    [int]$x,
+    [int]$y,
+    [string[]]$Mask,
+    [char]$Char,
+    [ConsoleColor]$ForeColour,
+    [ConsoleColor]$BackColour
 )
-
-    # save cursor position for later. we'll reset it back to this on our way out.
-    $cursorX = [Console]::CursorLeft
-    $cursorY = [Console]::CursorTop
-    $lastx = -1;
-
-    # loop through the screen buffer and write out any changes
-    for ($y = 0; $y -lt $CONBUFF_HEIGHT; $y++) {
-        #if ($y -ge $CONBUFF_HEIGHT) { break }
-        for ($x = 0; $x -lt $CONBUFF_WIDTH; $x++) {
-            #if ($x -ge $CONBUFF_WIDTH) { break }
-
-            $new_forecol = $global:ConBuff[$x, $y, $CONBUFF_IDX_FORECOL]
-            $new_backcol = $global:ConBuff[$x, $y, $CONBUFF_IDX_BACKCOL]
-            $new_value = $global:ConBuff[$x, $y, $CONBUFF_IDX_VALUE]
-            #$new_value = if ([string]::IsNullOrEmpty($new_value)) { " " } else { $new_value.ToString() }
-
-            # update if required 
-            $_updatereq = $Force.IsPresent -or (($new_forecol -ne $global:LastPrintedConBuff[$x, $y, $CONBUFF_IDX_FORECOL]) -or ($new_backcol -ne $global:LastPrintedConBuff[$x, $y, $CONBUFF_IDX_BACKCOL]) -or ($new_value -ne $global:LastPrintedConBuff[$x, $y, $CONBUFF_IDX_VALUE]))
-            if ($_updatereq -eq $true) {
-                $nx = $cursorX + $x
-                if ($nx -ne ($lastx + 1)) {
-                    SetCursorPos -x $nx -y ($cursorY + $y)
-                    $lastx = $nx
-                }                
-                [Console]::BackgroundColor = $new_backcol
-                [Console]::ForegroundColor = $new_forecol
-                [Console]::Write($new_value)
-            
+    for ($dy = 0; $dy -lt $Mask.Length; $dy++) {
+        for ($dx = 0; $dx -lt $Mask[$dy].Length; $dx++) {
+            if (-not [string]::IsNullOrWhiteSpace($Mask[$dy][$dx])) {
+                ConBuffWrite -x ($x + $dx) -y ($y + $dy) -Text $Char -ForeColour $ForeColour -BackColour $BackColour
             }
         }
     }
-    
-    # confirm changes written to screen - use as compare next time
-    for ($x = 0; $x -lt $CONBUFF_WIDTH; $x++) {
-        for ($y = 0; $y -lt $CONBUFF_HEIGHT; $y++) {
-            for ($z = 0; $z -lt $CONBUFF_IDX_LENGTH; $z++) {
-                $global:LastPrintedConBuff[$x, $y, $z] = $global:ConBuff[$x, $y, $z]
-            }
-        }
-    }    
-    
-    # reset cursor, if it's been moved
-    if (($cursorX -ne ([Console]::CursorLeft)) -or (($cursorY -ne ([Console]::CursorTop)))) {
-        if (-not $NoCursorReset.IsPresent) {
-            SetCursorPos -x $cursorX -y $cursorY
-        }
-    }
+}   
     
 
-}
-
-
-
-
-#######################################################################################################
-# Virtual screen drawing funcs
-#######################################################################################################
-
-
-function ConBuffCopyFrom($Source) {
-<# copies source buff on to $global:ConBuff #>
-    for ($x = 0; $x -lt $CONBUFF_WIDTH; $x++) {
-        for ($y = 0; $y -lt $CONBUFF_HEIGHT; $y++) {                    
-            $global:ConBuff[$x, $y, $CONBUFF_IDX_VALUE] = $Source[$x, $y, $CONBUFF_IDX_VALUE]
-            $global:ConBuff[$x, $y, $CONBUFF_IDX_FORECOL] = $Source[$x, $y, $CONBUFF_IDX_FORECOL]
-            $global:ConBuff[$x, $y, $CONBUFF_IDX_BACKCOL] = $Source[$x, $y, $CONBUFF_IDX_BACKCOL]
-        }
-    }
-}
-
-
-function ConBuffFillBox {
+function ConBuffDrawBox {
 <# writes box of a char to $global:ConBuff, starting at position x, y, with length, height (down and right) #>
 param(
     [char]$Char,
@@ -307,13 +225,13 @@ param(
 )
     for ($_x = $x; $_x -lt ($x + $Width); $_x++) {
         for ($_y = $y; $_y -lt ($y + $Height); $_y++) {
-            ConBuffWrite -Text:$Char -x $_x -y $_y -ForeColour:$ForeColour -BackColour:$BackColour
+            ConBuffWrite -Text $Char -x $_x -y $_y -ForeColour $ForeColour -BackColour $BackColour
         }
     }
 }
+    
 
-
-function ConBuffDrawBox {
+function ConBuffDrawFrame {
 <# draws a box, starting at position x, y, with length, height (down and right).#>
 param(
     [int]$x,
@@ -325,37 +243,78 @@ param(
 )
     # draw top and bottom lines
     for ($_x = $x + 1; $_x -lt ($x + $Width) - 1; $_x++) { 
-        ConBuffWrite -Text ([char]0x2550)  -x $_x -y $y -ForeColour:$ForeColour -BackColour:$BackColour
-        ConBuffWrite -Text ([char]0x2550)  -x $_x -y ($y + $Height - 1)  -ForeColour:$ForeColour -BackColour:$BackColour
+        ConBuffWrite -Text ([char]0x2550) -x $_x -y $y -ForeColour $ForeColour -BackColour $BackColour
+        ConBuffWrite -Text ([char]0x2550) -x $_x -y ($y + $Height - 1) -ForeColour $ForeColour -BackColour $BackColour
     }
     # draw left and right lines
     for ($_y = $y + 1; $_y -lt ($y + $Height) - 1; $_y++) { 
-        ConBuffWrite -Text ([char]0x2551) -x $x -y $_Y  -ForeColour:$ForeColour -BackColour:$BackColour 
-        ConBuffWrite -Text ([char]0x2551) -x ($x + $Width - 1) -y $_y  -ForeColour:$ForeColour -BackColour:$BackColour
+        ConBuffWrite -Text ([char]0x2551) -x $x -y $_Y  -ForeColour $ForeColour -BackColour $BackColour 
+        ConBuffWrite -Text ([char]0x2551) -x ($x + $Width - 1) -y $_y  -ForeColour $ForeColour -BackColour $BackColour
     }
     # draw corners
-    ConBuffWrite -Text ([char]0x2554) -x $x -y $y  -ForeColour:$ForeColour -BackColour:$BackColour 
-    ConBuffWrite -Text ([char]0x2557) -x ($x + $Width - 1) -y $y  -ForeColour:$ForeColour -BackColour:$BackColour
-    ConBuffWrite -Text ([char]0x255A) -x $x -y ($y + $Height - 1)  -ForeColour:$ForeColour -BackColour:$BackColour 
-    ConBuffWrite -Text ([char]0x255D) -x ($x + $Width - 1) -y ($y + $Height - 1)  -ForeColour:$ForeColour -BackColour:$BackColour
+    ConBuffWrite -Text ([char]0x2554) -x $x -y $y -ForeColour $ForeColour -BackColour $BackColour 
+    ConBuffWrite -Text ([char]0x2557) -x ($x + $Width - 1) -y $y -ForeColour $ForeColour -BackColour $BackColour
+    ConBuffWrite -Text ([char]0x255A) -x $x -y ($y + $Height - 1) -ForeColour $ForeColour -BackColour $BackColour 
+    ConBuffWrite -Text ([char]0x255D) -x ($x + $Width - 1) -y ($y + $Height - 1) -ForeColour $ForeColour -BackColour $BackColour
 }
+   
 
-
-function ConBuffDrawBorderexFillBox {
+function ConBuffDrawFramedBox {
+<# draws a framed box in conbuff #>
 param(
     [char]$Char,
     [int]$x,
     [int]$y,
     [int]$Width,
     [int]$Height,
-    [ConsoleColor]$ForeColour,
-    [ConsoleColor]$BackColour
+    [ConsoleColor]$FrameForeColour,
+    [ConsoleColor]$FrameBackColour,
+    [ConsoleColor]$BoxForeColour,
+    [ConsoleColor]$BoxBackColour
 )
     $Width = [System.Math]::Max($Width, 2)
     $Height = [System.Math]::Max($Height, 2)
-    ConBuffFillBox -Char:$Char  -ForeColour:$ForeColour -BackColour:$BackColour -x ($x + 1) -y ($y + 1) -Width ($Width - 1) -Height ($Height - 1)
-    ConBuffDrawBox -ForeColour:$ForeColour -BackColour:$BackColour -x:$x -y:$y -Width:$Width -Height:$Height
+    ConBuffDrawFrame -ForeColour $FrameForeColour -BackColour $FrameBackColour -x $x -y $y -Width $Width -Height $Height
+    ConBuffDrawBox -Char $Char -ForeColour $BoxForeColour -BackColour $BoxBackColour -x ($x + 1) -y ($y + 1) -Width ($Width - 2) -Height ($Height - 2)
 }
+    
+
+function PrintConBuff {
+<# displays $global:ConBuff in the console window #>
+param(
+    [switch]$Force                  # if not set, only changes are updated
+)
+    # loop through the screen buffer and write out any changes - drawing bottom up appears smoother
+    for ($y = ($CONBUFF_HEIGHT - 1); $y -ge 0; $y--) {
+        $ypos = $y * $CONBUFF_WIDTH                         # new base for index calcs
+        $lastx = [int]::MinValue;                           # if x is $lastx + 1, we don't need to SetCursor
+        for ($x = 0; $x -lt $CONBUFF_WIDTH; $x++) {
+            # get values from conbuff
+            $idx = $ypos + $x
+            $new_forecol = $ConBuff.ForeColours[$idx]
+            $new_backcol = $ConBuff.BackColours[$idx]
+            $new_value = $ConBuff.Buffer[$idx]
+            # update if required             
+            [bool]$_updatereq = $Force.IsPresent -or (($new_value -ne $LastConBuff.Buffer[$idx]) -or ($new_forecol -ne $LastConBuff.ForeColours[$idx]) -or ($new_backcol -ne $LastConBuff.BackColours[$idx]))
+            if ($true -eq $_updatereq) {                
+                if ($x -ne ($lastx + 1)) {
+                    [Console]::SetCursorPosition($x, $y);
+                    $lastx = $x
+                }                
+                [Console]::BackgroundColor = $new_backcol
+                [Console]::ForegroundColor = $new_forecol
+                [Console]::Write([char]($new_value))
+                $LastConBuff.Buffer[$idx] = $new_value
+                $LastConBuff.ForeColours[$idx] = $new_forecol
+                $LastConBuff.BackColours[$idx] = $new_backcol
+            }
+        }
+    }
+    #######################
+    [console]::ForegroundColor = $SAVED_FORECOLOUR
+    [console]::BackgroundColor = $SAVED_BACKCOLOUR
+}
+
 
 
 
@@ -368,19 +327,21 @@ param(
 # Define the TetrominoType enum
 Add-Type -TypeDefinition @"
 public enum TetrominoType {
-    I = 0,
-    J = 1,
-    L = 2,
-    O = 3,
-    S = 4,
-    T = 5,
-    Z = 6
+    I = 1,
+    J = 2,
+    L = 3,
+    O = 4,
+    S = 5,
+    T = 6,
+    Z = 7
 }
 "@
+$TETROMINOTYPE_MAXINTVALUE = [TetrominoType].GetEnumValues() | ForEach-Object { [int]$_ } | Sort-Object | Select-Object -Last 1
+$TETROMINOTYPE_MININTVALUE = [TetrominoType].GetEnumValues() | ForEach-Object { [int]$_ } | Sort-Object | Select-Object -First 1
+$TETROMINOTYPE_NUMVALUES = [TetrominoType].GetEnumValues().Count
 
-
-$TETROMINO_SIZE = 4                     # size x, y size of a tetromino
-$TETROMINO_CHAR = $CHAR_SOLIDBLOCK      # the character to use for a tetromino
+$TETROMINO_LENGTH = 4                     # x and y size of a tetromino
+$TETROMINO_CHAR = $CHAR_SOLIDBLOCK
 
 # Define the tetromino shapes as a dictionary of 4x4 multi-dimensional arrays indexed by the TetrominoType enum
 $TetrominoShapes = @{
@@ -429,198 +390,54 @@ $TetrominoShapes = @{
 }
 
 
-$TETROMINOTYPE_MAXINTVALUE = [TetrominoType].GetEnumValues() | ForEach-Object { [int]$_ } | Sort-Object | Select-Object -Last 1
-
-function GetRandomTetrinoType {   
-<# returns a random tetromino type value #> 
-    return [TetrominoType](Get-Random -Minimum 0 -Maximum $TETROMINOTYPE_MAXINTVALUE)
-}
- 
-
-
-# the current tetromino
-$global:CurTetromino = [pscustomobject]@{
-    Type = $null
-    Shape = $null
-    Row = 0
-    Column = 0
-    StartRow = 0
-}
-# the type of the next tetromino
-$global:NextTetrominoType = GetRandomTetrinoType
-
-
-
-$TetrominoColours = @{
-    [TetrominoType]::I = [ConsoleColor]::Cyan
-    [TetrominoType]::J = [ConsoleColor]::Blue
-    [TetrominoType]::L = [ConsoleColor]::DarkYellow
-    [TetrominoType]::O = [ConsoleColor]::Gray
-    [TetrominoType]::S = [ConsoleColor]::Green
-    [TetrominoType]::T = [ConsoleColor]::Magenta
-    [TetrominoType]::Z = [ConsoleColor]::Red
-}  
-
-
-function GetTetrominoColour {
+function NewTetrominoObject {
+<# generates a tetromino object. If type is defined, the tetomino shape is copied to this #>
 param(
-    $Type    
-)    
-<# returns a colour for each teromino shape #>   
-    return $TetrominoColours[$Type]
+    [TetrominoType]$Type
+)
+    $Result = [pscustomobject]@{
+        Type = $Type                            # the type of tetromino defined by shape
+        Shape = $null                           # shape of the tetromino (copied from $TetrominoShapes)
+        Row = 0                                 # current row in the game area
+        Column = 0                              # current column in the game area
+        ShapeStartRow = 0                       # initial row to start drawing tetromino when it enters the board.
+        ShapeEndRow = 0                         # last row where the tetromino shape ends
+    }
+    return $Result
+}
+
+
+function GetRandomTetrominoType {   
+<# returns a random tetromino type value #> 
+    return [TetrominoType](Get-Random -Minimum $TETROMINOTYPE_MININTVALUE -Maximum $TETROMINOTYPE_MAXINTVALUE)
 }
 
 
 function ConBuffDrawTetromino {
 <# draws a tetromino on conbuff at x, y#>
 param(
-    $Type,
+    [TetrominoType]$Type,
+    $Shape,
     [int]$x,
-    [int]$y
+    [int]$y,
+    [ConsoleColor]$BackColour
 )
-    $colour = GetTetrominoColour -Type $Type
-    $_shape = $TetrominoShapes[$Type]
-    for ($_x = 0; $_x -lt $TETROMINO_SIZE; $_x++) {
-        for ($_y = 0; $_y -lt $TETROMINO_SIZE; $_y++) {
-            if ($_shape[$_y][$_x]) { 
-                $_text = $TETROMINO_CHAR
-                ConBuffWrite -Text $_text -x ($x + $_x) -y ($y + $_y) -ForeColour $colour -BackColour 'Black'
+    if ($null -eq $Shape) {        
+        $Shape = GetTetrominoPrintShape -Shape ($TetrominoShapes[$Type])
+    }
+    $backcol = if ($null -eq $BackColour) { $TetrominoBackColours[$Type] } else { $BackColour }
+    for ($dx = 0; $dx -lt $TETROMINO_LENGTH; $dx++) {
+        for ($dy = 0; $dy -lt $TETROMINO_LENGTH; $dy++) {
+            if ($Shape[$dy][$dx]) { 
+                $_char = $Shape[$dy][$dx]
+                if ($_char -eq 1) { $_char = $TETROMINO_CHAR }                
+                ConBuffWrite -Text $_char -x ($x + $dx) -y ($y + $dy) -ForeColour $TetrominoForeColours[$Type] -BackColour $backcol
             }             
         }
     }
-}  
-
-
-
-
-#######################################################################################################
-# Board
-#######################################################################################################
-
-
-# game board - the value in each cell is the int value of TetrominoType. -1 is blank
-$global:GameBoard = [int[,]]::new($GAMEAREA_WIDTH, $GAMEAREA_HEIGHT)
-
-[int]$GAMEBOARD_EMPTYVAL = -1                                       # the value representing an empty game board cell
-[int]$GAMEBOARD_EXPLODEVAL = $TETROMINOTYPE_MAXINTVALUE + 1         # the int value representing an exploding cell
-
-
-# hashtable of board values > char to print on the board. Exception is tetromino.
-$TetrominoBoardChars = @{} 
-$TetrominoBoardChars[$GAMEBOARD_EMPTYVAL] = ' '
-[TetrominoType].GetEnumValues() | ForEach-Object { $TetrominoBoardChars[([int]$_)] = $TETROMINO_CHAR }
-$TetrominoBoardChars[$GAMEBOARD_EXPLODEVAL] = $CHAR_FADE2
-
-
-function ClearGameBoard {
-<# clears the game board - fills with empty values#>
-    for ($i = 0; $i -lt $GAMEAREA_WIDTH; $i++) {
-        for ($j = 0; $j -lt $GAMEAREA_HEIGHT; $j++) {
-            $global:GameBoard[$i, $j] = $GAMEBOARD_EMPTYVAL
-        }
-    }
 }
 
 
-function GetBoardObjectForeColour {
-<# returns the fore colour of a the value of a board cell#>
-param(
-    $Object
-)
-    switch ($Object) {
-        $GAMEBOARD_EMPTYVAL { return [ConsoleColor]::Black }
-        $GAMEBOARD_EXPLODEVAL { return [ConsoleColor]::Gray }
-    }    
-    return GetTetrominoColour -Type ([Enum]::ToObject([TetrominoType], $Object))
-}
-
-
-function PlaceCurTetromino {
-<# paints or removes the current tetromino on the board #>
-param(
-    [switch]$Remove                 # remove tetromino from board. 
-)
-    if (($null -eq $global:CurTetromino) -or ($null -eq $global:CurTetromino.Shape)) {
-        return
-    }
-    for ($r = 0; $r -lt $TETROMINO_SIZE; $r++) {
-        for ($c = 0; $c -lt $TETROMINO_SIZE; $c++) {
-            if ($global:CurTetromino.Shape[$r][$c]) {
-                $_row = $global:CurTetromino.Row + $r
-                $_col = $global:CurTetromino.Column + $c
-                if (($_row -ge 0) -and ($_row -lt $GAMEAREA_HEIGHT) -and ($_col -ge 0) -and ($_col -lt $GAMEAREA_WIDTH)) {
-                    [int]$val = if ($Remove.IsPresent) { $GAMEBOARD_EMPTYVAL } else { [int]$global:CurTetromino.Type }
-                    $global:GameBoard[$_col, $_row] = $val
-                }
-            }
-        }
-    }
-}
-
-
-function NewTetromino {
-<# creates a new tetromino by changing CurTetromino to use the type defined by NextTetrominoType #>
-    if ($null -eq $global:NextTetrominoType) { 
-        $global:NextTetrominoType = GetRandomTetrinoType 
-    }
-    $global:CurTetromino.Type = $global:NextTetrominoType
-    $global:CurTetromino.Shape = $TetrominoShapes[$global:NextTetrominoType]
-    $global:CurTetromino.Column = ($GAMEAREA_WIDTH - $TETROMINO_SIZE) / 2
-    $global:NextTetrominoType = GetRandomTetrinoType
-    # get the first line that has something in it. We want that to be the first thing that displays on row 0.
-    $global:CurTetromino.StartRow = -1;   # default to -1
-    for ($y = 0; $y -lt $TETROMINO_SIZE; $y++) {
-        for ($x = 0; $x -lt $TETROMINO_SIZE; $x++) {
-            if ($global:CurTetromino.Shape[$y][$x]) {                
-                $global:CurTetromino.StartRow = $y
-                break
-            }
-        }
-        if ($global:CurTetromino.StartRow -ge 0) { 
-            break 
-        }
-    }
-    if ($StartRow -eq -1) { 
-        $StartRow = 0
-    }
-    $global:CurTetromino.Row = (0 - $global:CurTetromino.StartRow)
-    # will it fit ?
-    $willfit = WillCurTetrominoFit -Row $global:CurTetromino.Row -Column $global:CurTetromino.Column
-    if (-not $willfit) {
-        GameOver
-    }
-    # update stats
-    $global:GameData_ObjectStats[([int]$global:CurTetromino.Type)]++
-}
-
-
-# Will the current tetromino fit at a given row and column on the game board
-function WillCurTetrominoFit {
-param(
-    [int]$Row,
-    [int]$Column
-)
-    for ($r = 0; $r -lt $TETROMINO_SIZE; $r++) {
-        for ($c = 0; $c -lt $TETROMINO_SIZE; $c++) {
-            if (-not $global:CurTetromino.Shape[$r][$c]) { 
-                continue 
-            }
-            # is row out of bounds
-            if (($Row + $r -lt 0) -or ($Row + $r -ge $GAMEAREA_HEIGHT)) { 
-                return $false 
-            }
-            # is column out of bounds
-            if (($Column + $c -lt 0) -or ($Column + $c -ge $GAMEAREA_WIDTH)) { 
-                return $false 
-            }
-            # is gameboard empty at spot
-            if ($global:GameBoard[($Column + $c),($Row + $r)] -gt $GAMEBOARD_EMPTYVAL) { 
-                return $false 
-            }
-        }
-    }
-    return $true
-}
 
 
 
@@ -631,43 +448,99 @@ param(
 #######################################################################################################
 
 
-[bool]$global:GracefulGameFinish = $false       # this is set to true when the current game ended gracefully.
+$GAMEBOARD_WIDTH = 10                # width of the tetris game area
+$GAMEBOARD_HEIGHT = 18               # height of the tetris game area
 
-[int]$global:GameData_TopScore = 0              # topscore is not reset during 'ResetGame'
-[int]$global:GameData_Score = 0                 # score
-[int]$global:GameData_Lines = 0                 # number of lines cleared
-[int]$global:GameData_Level = 0                 # current level
-
-# game stats - how many of each object
-$global:GameData_ObjectStats = New-Object int[] ($TETROMINOTYPE_MAXINTVALUE + 1)
+[int]$GAMEBOARD_EMPTYVAL = 0                                       # the value representing an empty game board cell
+[int]$GAMEBOARD_EXPLODEVAL = $TETROMINOTYPE_MAXINTVALUE + 1         # the int value representing an exploding cell
 
 
-$TOPSCORE_FILENAME = 'pstetris.topscore.txt'
+# game types
+Enum GameType {
+    AGame
+}
 
-# read-in topscore from file (if exists)
-if ((Test-Path $TOPSCORE_FILENAME -ErrorAction SilentlyContinue)) {
-    $line = Get-Content 'pstetris.topscore' -ErrorAction SilentlyContinue | Select-Object -First 1
-    if (-not [string]::IsNullOrWhiteSpace($line)) {
-        [int]::TryParse($line, [ref]$global:GameData_TopScore) | Out-Null
+function NewGameDataObject {
+    $Result = [PSCustomObject]@{
+        Score = 0
+        Level = 0
+        Lines = 0
+        TopScore = 0
+        GameType = $null
+        Name = $null        
+        Statistics = @{}
+        CurrentTetromino = NewTetrominoObject
+        NextTetrominoType = GetRandomTetrominoType
+        Board = [int[,]]::new($GAMEBOARD_HEIGHT, $GAMEBOARD_WIDTH);             # this holds data for placement of pieces
+        BoardChars = [int[,]]::new($GAMEBOARD_HEIGHT, $GAMEBOARD_WIDTH);        # this holds the character to print
+        StartTime = [datetime]::MinValue
+        EndTime = [datetime]::MinValue
     }
+    [Enum]::GetValues([TetrominoType]) | ForEach-Object { $Result.Statistics[$_] = 0 }
+    return $Result
 }
 
 
-function ResetGame {
-<# clears the game board and resets the game #>
-    for ($x = 0; $x -lt $GAMEAREA_WIDTH; $x++) {
-        for ($y = 0; $y -lt $GAMEAREA_HEIGHT; $y++) {
-            $global:GameBoard[$x, $y] = $GAMEBOARD_EMPTYVAL
+# store data for each game here
+$AllGameData = @{}
+[enum]::GetValues([GameType]) | % {
+    $rec = NewGameDataObject
+    $rec.GameType = $_
+    $rec.Name = $_.ToString()
+    $AllGameData[$_] = $rec    
+}
+$AllGameData[[GameType]::AGame].Name = "A-Type"
+
+# current game data stored here
+#$GameData = $AllGameData[[GameType]::AGame]
+
+function ResetGameData {
+<# resets game data #>
+    $global:GameData = $global:AllGameData[[GameType]::AGame]
+    $GameData.Score = 0
+    $GameData.Level = 1
+    $GameData.Lines = 0
+    [Enum]::GetValues([TetrominoType]) | ForEach-Object { $GameData.Statistics[$_] = 0 }
+    $GameData.CurrentTetromino = NewTetrominoObject
+    $GameData.NextTetrominoType = GetRandomTetrominoType    
+    for ($y = 0; $y -lt $GAMEBOARD_HEIGHT; $y++) {
+        for ($x = 0; $x -lt $GAMEBOARD_WIDTH; $x++) {
+            $GameData.Board[$y, $x] = $GAMEBOARD_EMPTYVAL
+            $GameData.BoardChars[$y, $x] = $CHAR_EMPTY
         }
     }
-    $global:GameData_Score, $global:GameData_Lines = 0;
-    $global:GameData_Level = 1
-    $global:CurTetromino.Type   = $null
-    $global:NextTetrominoType = GetRandomTetrinoType    
-    for ($i = 0; $i -lt $global:GameData_ObjectStats.Length; $i++) {                 # reset stats
-        $global:GameData_ObjectStats[$i] = 0
-    }
-    $global:GracefulGameFinish = $false
+    $GameData.StartTime = [datetime]::MinValue
+    $GameData.EndTime = [datetime]::MinValue
+}
+
+
+
+
+
+# number of points for each line cleared, per level
+$PointsPerLineCleared = @(0, 40, 100, 300, 1200)
+$PointsPerNewOnKeyDown = 10
+
+# max number of rows that can be cleared
+$MAXROWSCLEARED = 4
+
+function GetNumberOfPointsForLinesCleared {
+param(
+    [int]$NumLinesCleared
+)
+<# returns the number of points for clearing lines for a level#>
+    $NumLinesCleared = [System.Math]::Max(0, [System.Math]::Min(4, $NumLinesCleared))
+    $points = ($PointsPerLineCleared[$NumLinesCleared] * ($GameData.Level + 1))
+    return $points
+}
+
+
+function AddPointsToScore {
+param (
+    [int]$PointToAdd
+)
+    $GameData.Score += $PointToAdd
+    $GameData.TopScore = [System.Math]::Max($GameData.TopScore, $GameData.Score)
 }
 
 
@@ -676,35 +549,22 @@ $DelaymsPerLevel = @(1000, 800, 757, 714, 671, 628, 585, 542, 499, 456, 420, 399
 
 function GetDelaymsForCurrentLevel {   
 <# returns the current ms delay for tetrino falls used in the main game loop #>
-    $idx = if ($global:GameData_Level -lt $DelaymsPerLevel.Length) { $global:GameData_Level } else { $DelaymsPerLevel.Length }
+    $idx = if ($GameData.Level -lt $DelaymsPerLevel.Length) { $GameData.Level } else { $DelaymsPerLevel.Length }
     return $DelaymsPerLevel[$idx]
 }
 
 
-# number of points for each line cleared, per level
-$global:PointsPerLineCleared = @(0, 40, 100, 300, 1200)
-
-function GetNumberOfPointsForLinesCleared {
-param(
-    [int]$NumLinesCleared
-)
-<# returns the number of points for clearing lines for a level#>
-    $NumLinesCleared = [System.Math]::Max(0, [System.Math]::Min(4, $NumLinesCleared))
-    $points = ($global:PointsPerLineCleared[$NumLinesCleared] * ($global:GameData_Level + 1))
-    return $points
-}
 
 
-function UpdateScore($AddPoints) {
-    $global:GameData_Score += $AddPoints
-    $global:GameData_TopScore = [System.Math]::Max($global:GameData_TopScore, $global:GameData_Score)
-}
+#######################################################################################################
+# Game Area
+#######################################################################################################
 
 
 function ConvertScoreToString {
 <# Converts a score value in to a string of numdigits long #>
 param(
-    $Value,
+    [int]$Value = 0,
     $NumDigits = 6
 )    
     # is value -lt max int val
@@ -720,583 +580,573 @@ param(
     # too big
     return "e".ToString().PadLeft($NumDigits, '#')
 }
-
-
-
-
-#######################################################################################################
-# Game Control
-#######################################################################################################
-
-
-function CheckAndProcessFullLines {    
-<# animates the removal of the lowest 4 complete lines, then returns the number of lines cleared. #>
-    # get first 4 full lines
-    $completerows = New-Object System.Collections.ArrayList    
-    for ($y = $GAMEAREA_HEIGHT - 1; $y -ge 0; $y--) {
-        $xcounter = 0
-        for ($x = 0; $x -lt $GAMEAREA_WIDTH; $x++) {
-            if ($global:GameBoard[$x, $y] -ne $GAMEBOARD_EMPTYVAL) {
-                $xcounter++
-            }
-        }
-        # is full row ?
-        if ($xcounter -eq $GAMEAREA_WIDTH) {
-            [void]$completerows.Add($y)
-            if ($completerows.Count -eq 4) { 
-                break
-            }
-        }
-    }
-    # shortcut break
-    if ($completerows.Count -eq 0) {
-        return 0
-    }    
-    # update score
-    $points = GetNumberOfPointsForLinesCleared -NumLinesCleared $completerows.Count 
-    UpdateScore -AddPoints $points
-    $global:GameData_Lines += ($completerows.Count)
-    $global:GameData_Level = [Math]::Floor($global:GameData_Lines / 10) + 1
-    # fade out the each row
-    foreach ($completerow in $completerows) {
-        for ($x = 0; $x -lt $GAMEAREA_WIDTH; $x++) {
-            $global:GameBoard[$x, $completerow] = $GAMEBOARD_EXPLODEVAL
-        }
-    }
-    PrintGameBoard
-    Start-Sleep -Milliseconds 5
-    foreach ($completerow in $completerows) {
-        for ($x = 0; $x -lt $GAMEAREA_WIDTH; $x++) {
-            $global:GameBoard[$x, $completerow] = $GAMEBOARD_EMPTYVAL
-        }
-    }
-    PrintGameBoard
-    Start-Sleep -Milliseconds 5
-    # remove the complete rows and reprint
-    $tempBoard = [int[,]]::new($GAMEAREA_WIDTH, $GAMEAREA_HEIGHT)
-    $desty = $GAMEAREA_HEIGHT - 1
-    for ($y = ($GAMEAREA_HEIGHT - 1); $y -ge 0; $y--) {
-        if ($completerows.Contains($y)) { continue }             # skip copy if it's a full row
-        for ($x = 0; $x -lt $GAMEAREA_WIDTH; $x++) {
-            $tempBoard[$x, $desty] = $global:GameBoard[$x, $y]
-        }
-        $desty--
-    }
-    while ($desty -ge 0) {                                       # fill rows we didn't copy to with empty spaces
-        for ($x = 0; $x -lt $GAMEAREA_WIDTH; $x++) {
-            $tempBoard[$x, $desty] = $GAMEBOARD_EMPTYVAL
-        }
-        $desty--
-    }
-    $global:GameBoard = $tempBoard
-    PrintGameBoard    
-    return $completerows.length                                  # make sure we returns the num rows cleared
-}
-
-
-function MoveTetrominoDown {  
-param(
-    [switch]$KeyboardUsed           #set if called by a keyboard handler - will give an extra 10 points * cur level.
-) 
-    PlaceCurTetromino -Remove
-    $willfit = WillCurTetrominoFit -Row ($global:CurTetromino.Row + 1) -Column $global:CurTetromino.Column 
-    if (-not $willfit) {        
-        PlaceCurTetromino                           # redraw old shape on board
-        # if we can't move, and we're at the top - game over man!
-        if ($global:CurTetromino.Row + $CurTetromino.StartRow -eq 0) {
-            GameOver
-        }    
-        # if we're creating a new tetromino after the last piece was placed by a keydown, then give some points
-        if ($KeyboardUsed.IsPresent) {
-            UpdateScore -AddPoints (10 * $global:GameData_Level)
-        }
-        # remove full lines
-        while ((CheckAndProcessFullLines -ne 0)) {         # keep checking for complete rows unti all clear
-            # blank
-            Start-Sleep -Milliseconds 100
-        }
-        # create new tetromino
-        NewTetromino                                
-    }
-    else {
-        $global:CurTetromino.Row++
-    }
-    # update screen
-    PlaceCurTetromino
-    PrintGameBoard    
-}
-
-
-function MoveTetrominoLeft {
-<# slide to the left #>
-    PlaceCurTetromino -Remove
-    $willfit = WillCurTetrominoFit -Row $global:CurTetromino.Row -Column ($global:CurTetromino.Column  - 1)
-    if ($willfit) {
-        $global:CurTetromino.Column--
-    }
-    PlaceCurTetromino
-    PrintGameBoard    
-}
-
-
-function MoveTetrominoRight {
-<# slide to the right #>
-    PlaceCurTetromino -Remove
-    $willfit = WillCurTetrominoFit -Row $global:CurTetromino.Row -Column ($global:CurTetromino.Column  + 1)
-    if ($willfit) {
-        $global:CurTetromino.Column++
-    }
-    PlaceCurTetromino
-    PrintGameBoard    
-}
-
-
-function RotateTetrominoClockwise {
-<# xris xross - rotates the shape of the current tetromino clockwise (if it fits) #>
-    PlaceCurTetromino -Remove
-    $old_shape = $CurTetromino.Shape
-    $new_shape = @((New-Object int[](4)), (New-Object int[](4)), (New-Object int[](4)), (New-Object int[](4)))
-    # rotate your owl!
-    for ($r = 0; $r -lt $TETROMINO_SIZE; $r++) {
-        for ($c = 0; $c -lt $TETROMINO_SIZE; $c++) {
-            $new_shape[$c][($TETROMINO_SIZE - 1 - $r)] = $old_shape[$r][$c]            
-        }
-    }
-    $CurTetromino.Shape = $new_shape
-    # if we don't fit, revert back to old shape
-    $willfit = WillCurTetrominoFit -Row $global:CurTetromino.Row -Column $global:CurTetromino.Column
-    if (-not $willfit) {
-        $global:CurTetromino.Shape = $old_Shape
-    }
-    PlaceCurTetromino
-    PrintGameBoard    
-}
-
-
-
-
-#######################################################################################################
-# Fancy Background
-#######################################################################################################
-
-
-# this stores the game background screen
-$FancyBackground = $global:ConBuff.Clone()
-
-$fancy_background_chars = $CHAR_EMPTY, $CHAR_FADE3, $CHAR_FADE2, $CHAR_FADE1, $CHAR_SOLIDBLOCK
-for ($x = 0; $x -lt $CONBUFF_WIDTH; $x++) {
-    for ($y = 0; $y -lt $CONBUFF_HEIGHT; $y++) {        
-        $_randpos = Get-Random -Minimum 0 -Maximum $fancy_background_chars.Length
-        $FancyBackground[$x, $y, $CONBUFF_IDX_VALUE] = $fancy_background_chars[$_randpos]
-        $FancyBackground[$x, $y, $CONBUFF_IDX_FORECOL] = $FORECOLOUR_BACKGROUND
-        $FancyBackground[$x, $y, $CONBUFF_IDX_BACKCOL] = $BACKCOLOUR_BACKGROUND
-    }
-}
-    
-
-
-
-#######################################################################################################
-# Menu Screen
-#######################################################################################################
-
-
-# http://patorjk.com/software/taag/
-$title = @(
-"           xxxx   xxx"
-"           x   x x"
-"           xxxx   xxx"
-"           x         x"
-"           x     xxxx"
-""	   
-"xxxxxx xxxx xxxxxx xxxx  xxx  xxx "
-"  xx   x      xx   x   x  x  x    "
-"  xx   xxx    xx   xxxx   x   xxx "
-"  xx   x      xx   x x    x      x"
-"  xx   xxxx   xx   x  xx xxx xxxx " 
-)
-
-
-function DrawTitle {
-param(
-    [int]$titley = 2
-)
-<# draws the title, with shadow #>    
-    $titlex = 1
-    # draw title shadow
-    for ($y = 0; $y -lt $title.Count; $y++) {
-        $line = $title[$y]
-        for ($x = 0; $x -lt $line.Length; $x++) {
-            if ((($x + 1) -lt $line.Length) -and (-not ([string]::IsNullOrWhiteSpace($line[($x + 1)])))) {
-                $char = $CHAR_FADE2
-                ConBuffWrite -Text $char -x ($titlex + $x) -y  ($titley + $y + 1) -ForeColour $FORECOLOUR_TITLESHADOW -BackColour $BACKCOLOUR_TITLESHADOW
-            }
-        }
-    }
-    # draw title white
-    for ($y = 0; $y -lt $title.Count; $y++) {
-        $line = $title[$y]
-        for ($x = 0; $x -lt $line.Length; $x++) {
-            $char = $CHAR_SOLIDBLOCK
-            if (-not ([string]::IsNullOrWhiteSpace($line[$x]))) {
-                ConBuffWrite -Text $char -x ($titlex + $x) -y  ($titley + $y) -ForeColour $FORECOLOUR_TITLE -BackColour $BACKCOLOUR_TITLE
-            }
-        }
-    }
-}
-
-
-# write the title to the console
-function DoMainMenu() {
-
-    $menux = 10
-    $menuy = 18
-    $cury = $menuy
-    $maxmenuy = $menuy + 4
-
-    $mode = 'Main'       # current menu mode/option.
-
-    $lastpaintmode = ""
-    [bool]$allowtopscoreonscreen = $true
-   
-    function Paint {
-        # background and title
-        ClearConBuff
-        ConBuffCopyFrom -Source $FancyBackground
-       
-        # title
-        DrawTitle
         
-        # menu
-        ConBuffDrawBorderexFillBox -Char ' ' -x 8 -y 16 -Width 20 -Height 9 -ForeColour $FORECOLOUR_MENU -BackColour $BACKCOLOUR_MENU
-        if ($Mode -eq 'Main') {
-            # draw topscore
-            if ($allowtopscoreonscreen -and ($global:GameData_TopScore -gt 0)) {
-                [string]$scoreStr = $global:GameData_TopScore.ToString()
-                $scoreStr = "TopScore: " + $scoreStr
-                ConBuffWrite -Text $scoreStr -x (($CONBUFF_WIDTH / 2) - ($scoreStr.Length / 2)) -y 14 -ForeColour $FORECOLOUR_SCORE -BackColour $BACKCOLOUR_BACKGROUND
-            }
-            # draw menu items
-            ConBuffWrite -Text "   New A Game" -x $menux -y $menuy -ForeColour $FORECOLOUR_MENU -BackColour $BACKCOLOUR_MENU 
-            ConBuffWrite -Text "    Controls" -x $menux -y ($menuy + 2) -ForeColour $FORECOLOUR_MENU -BackColour $BACKCOLOUR_MENU 
-            ConBuffWrite -Text "     Quit!" -x $menux -y ($menuy + 4) -ForeColour $FORECOLOUR_MENU -BackColour $BACKCOLOUR_MENU 
-            # draw current menu item
-            ConBuffWrite -Text $CHAR_ARROWRIGHT -x $menux -y $cury -ForeColour $FORECOLOUR_MENU -BackColour $BACKCOLOUR_MENU 
-            ConBuffWrite -Text $CHAR_ARROWLEFT -x ($menux + 15) -y $cury -ForeColour $FORECOLOUR_MENU -BackColour $BACKCOLOUR_MENU 
-        }
-        elseif ($Mode -eq 'Controls') {
-            ConBuffWrite -Text (" {0}    Rotate" -f $CHAR_ARROWUP) -x ($menux + 1) -y ($menuy) -ForeColour $FORECOLOUR_MENU -BackColour $BACKCOLOUR_MENU 
-            ConBuffWrite -Text (" {0}    Down" -f $CHAR_ARROWDOWN) -x ($menux + 1) -y ($menuy + 1) -ForeColour $FORECOLOUR_MENU -BackColour $BACKCOLOUR_MENU 
-            ConBuffWrite -Text (" {0}    Right" -f $CHAR_ARROWRIGHT) -x ($menux + 1) -y ($menuy + 2) -ForeColour $FORECOLOUR_MENU -BackColour $BACKCOLOUR_MENU 
-            ConBuffWrite -Text (" {0}    Left" -f $CHAR_ARROWLEFT) -x ($menux + 1) -y ($menuy + 3) -ForeColour $FORECOLOUR_MENU -BackColour $BACKCOLOUR_MENU 
-            ConBuffWrite -Text "ESC   Quit" -x ($menux + 1) -y ($menuy + 4) -ForeColour $FORECOLOUR_MENU -BackColour $BACKCOLOUR_MENU 
-        }
 
-        PrintConBuff
-    }
+# colours used to draw tetrominos
+#$TetrominoForeColours = @{
+$TetrominoBackColours = @{
+    [TetrominoType]::I = [ConsoleColor]::Cyan
+    [TetrominoType]::J = [ConsoleColor]::Blue
+    [TetrominoType]::L = [ConsoleColor]::DarkYellow
+    [TetrominoType]::O = [ConsoleColor]::Gray
+    [TetrominoType]::S = [ConsoleColor]::Green
+    [TetrominoType]::T = [ConsoleColor]::Magenta
+    [TetrominoType]::Z = [ConsoleColor]::Red
+}  
+#$TetrominoBackColours = @{
+$TetrominoForeColours = @{
+    [TetrominoType]::I = [ConsoleColor]::DarkCyan
+    [TetrominoType]::J = [ConsoleColor]::DarkBlue
+    [TetrominoType]::L = [ConsoleColor]::Yellow
+    [TetrominoType]::O = [ConsoleColor]::DarkGray
+    [TetrominoType]::S = [ConsoleColor]::DarkGreen
+    [TetrominoType]::T = [ConsoleColor]::DarkMagenta
+    [TetrominoType]::Z = [ConsoleColor]::DarkRed
+} 
 
-    Paint
-    $lasttopscorems = $stopwatch.ElapsedMilliseconds
-    while ($true) {
-        $topscorems = $stopwatch.ElapsedMilliseconds
-        if ($topscorems - $lasttopscorems -gt 1000) {
-            $lasttopscorems = $topscorems
-            $allowtopscoreonscreen = !$allowtopscoreonscreen
-            $updatereq = $true
-        }
-        if ([Console]::KeyAvailable) {
-            $key = [Console]::ReadKey($false)
-            if ($mode -eq 'Main') {
-                if ($key.key -eq [ConsoleKey]::DownArrow) {
-                    $cury = $cury + 2;
-                    if ($cury -gt $maxmenuy) {
-                        $cury = $menuy;
-                    }
-                    $updatereq = $true;
+
+#$borderChars = "─", "│", "┌", "┐","└","┘","├","┤","┬","┴","┼"
+#$borderChars = [char]0x2500, [char]0x2502, [char]0x250C, [char]0x2510, [char]0x2514, [char]0x2518, [char]0x251C, [char]0x2524, [char]0x252C, [char]0x2534, [char]0x253C
+
+$CHAR_NESW = [char]0x253C
+$CHAR_NSW = [char]0x2524
+$CHAR_NES = [char]0x251C
+$CHAR_NS = [char]0x2502
+$CHAR_EW = [char]0x2500
+$CHAR_NEW = [char]0x2534
+$CHAR_ESW = [char]0x252C
+$CHAR_NE = [char]0x2514
+$CHAR_ES = [char]0x250C
+$CHAR_SW = [char]0x2510
+$CHAR_WN = [char]0x2518
+
+
+function GetTetrominoPrintShape {
+<# returns the tetromino an array of chars to print #>
+param(
+    [array]$Shape
+)
+    $newshape = @(@(0, 0, 0, 0), @(0, 0, 0, 0), @(0, 0, 0, 0), @(0, 0, 0, 0))
+    for ($r = 0; $r -lt $TETROMINO_LENGTH; $r++) {
+        for ($c = 0; $c -lt $TETROMINO_LENGTH; $c++) {
+            if (-not ($Shape[$r][$c])) {
+                continue
+            }
+            $n = [int[]]@(0, 0, 0, 0)
+            if ($r -gt 0) { $n[0] = $Shape[($r - 1)][$c] }                      # above
+            if ($r -lt $TETROMINO_LENGTH - 1) { $n[1] = $Shape[($r + 1)][$c] }  # below
+            if ($c -gt 0) { $n[2] = $Shape[$r][($c - 1)] }                      # left
+            if ($c -lt $TETROMINO_LENGTH - 1) { $n[3] = $Shape[$r][($c + 1)] }  # right
+                                
+            # if has north and south
+            $newshape[$r][$c] = if ($n[0] -and $n[1]) { 
+                # if has east and west
+                if ($n[2] -and $n[3]) { $CHAR_NESW }
+                # if west
+                elseif ($n[2]) { $CHAR_NSW }
+                # if east
+                elseif ($n[3]) { $CHAR_NES }
+                # else north/south
+                else { $CHAR_NS}
+            }
+            # if has west and east
+            elseif ($n[2] -and $n[3]) {
+                # has north ?
+                if ($n[0]) { $CHAR_NEW }
+                # has south ?
+                elseif ($n[1]) { $CHAR_ESW }
+                # else east/west
+                else { $CHAR_EW }
+            } 
+            else {
+                # if north
+                if ($n[0]) {
+                    if ($n[2]) { $CHAR_WN }                            
+                    elseif ($n[3]) { $CHAR_NE }
+                    else { $CHAR_NS }
                 }
-                elseif ($key.Key -eq [ConsoleKey]::UpArrow) {
-                    $cury = $cury - 2;
-                    if ($cury -lt $menuy) {
-                        $cury = $maxmenuy
-                    }
-                    $updatereq = $true
+                # if south
+                elseif ($n[1]) {
+                    if ($n[2]) { $CHAR_SW }                               
+                    elseif ($n[3]) { $CHAR_ES }
+                    else { $CHAR_NS }
                 }
-                elseif ($key.Key -eq [ConsoleKey]::Enter) {
-                    switch ($cury) {
-                        $menuy { return "AGame" }
-                        ($menuy + 2) { 
-                            $mode = 'Controls' 
-                            $updatereq = $true
-                            break
-                        }  
-                        ($menuy + 4) { return "Quit" }  
-                    }
+                elseif ($n[2]) {
+                    if ($n[0]) { $CHAR_WN }
+                    elseif ($n[1]) { $CHAR_SW }
+                    else { $CHAR_EW }
+                }
+                elseif ($n[3]) {
+                    if ($n[0]) { $CHAR_NE }
+                    elseif ($n[1]) { $CHAR_ES }
+                    else { $CHAR_EW }
+                }
+                else {
+                    $CHAR_SOLIDBLOCK
                 }
             }
-            elseif ($mode -eq 'Controls') {
-                if ($Key.Key -eq 'Escape') {
-                    $mode = 'Main'
-                    $updatereq = $true                
-                }
-            }
         }
-        # update screen
-        if ($updatereq -eq $true) {
-            Paint
-            $updatereq = $false      
-            ClearKeyboardBuffer            
-        }
-        # sleep
-        Start-Sleep -Milliseconds 5
     }
-    return "Quit"
+    return $newshape
 }
-
-
-
-
-#######################################################################################################
-# MAIN GAME
-#######################################################################################################
 
 
 # some vars to help line things
-$gacolx1 = 2              # game area column a
-$gacolx2 = 14             # game area column b
-$garow = 5                # start row of game area border
-$gacolx3 = $gacolx2 + $GAMEAREA_WIDTH + 2 # game area column c
+$GAMEAREA_COL1 = 2                                      # game area column a
+$GAMEAREA_COL2 = 14                                     # game area column b
+$GAMEAREA_COL3 = $GAMEAREA_COL2 + $GAMEBOARD_WIDTH + 2   # game area column c
+$GAMEAREA_ROW1 = 5                                      # start row of game area border
 
 
-function DrawGameBackground() {
-
-    ConBuffCopyFrom -Source $FancyBackground
- 
-     # draw a-type game area
-    ConBuffDrawBorderexFillBox -Char $CHAR_EMPTY -x ($gacolx1 + 1) -y 3 -Width 8 -Height 3 -ForeColour $FORECOLOUR_BORDER -BackColour $BACKCOLOUR_BORDER
+function DrawGameBackground {
+<# local paint, to paint the currently displayed menu #>
+    # draw the background and title
+    ClearConBuff
+    CopyToConBuff -Source $FancyBackground
+    # draw a-type game area
+    ConBuffDrawFramedBox -Char $CHAR_EMPTY -x ($GAMEAREA_COL1 + 1) -y 3 -Width 8 -Height 3 -FrameForeColour $FORECOLOUR_BORDER -FrameBackColour $BACKCOLOUR_BORDER -BoxForeColour $FORECOLOUR_GAMETEXT -BoxBackColour $BACKCOLOUR_GAMETEXT
     # draw statistics
-    ConBuffDrawBorderexFillBox -Char $CHAR_EMPTY -x $gacolx1 -y 7 -Width 12 -Height 18 -ForeColour $FORECOLOUR_BORDER -BackColour $BACKCOLOUR_BORDER
-
+    ConBuffDrawFramedBox -Char $CHAR_EMPTY -x $GAMEAREA_COL1 -y 7 -Width 12 -Height 18 -FrameForeColour $FORECOLOUR_BORDER -FrameBackColour $BACKCOLOUR_BORDER -BoxForeColour $FORECOLOUR_GAMETEXT -BoxBackColour $BACKCOLOUR_GAMETEXT
     # draw lines game area
-    ConBuffDrawBorderexFillBox -Char $CHAR_EMPTY -x $gacolx2 -y 2 -Width 12 -Height 3 -ForeColour $FORECOLOUR_BORDER -BackColour $BACKCOLOUR_BORDER
+    ConBuffDrawFramedBox -Char $CHAR_EMPTY -x $GAMEAREA_COL2 -y 2 -Width 12 -Height 3 -FrameForeColour $FORECOLOUR_BORDER -FrameBackColour $BACKCOLOUR_BORDER -BoxForeColour $FORECOLOUR_GAMETEXT -BoxBackColour $BACKCOLOUR_GAMETEXT
     # draw main game area
-    ConBuffDrawBorderexFillBox -Char $CHAR_EMPTY -x $gacolx2 -y $garow -Width ($GAMEAREA_WIDTH + 2) -Height ($GAMEAREA_HEIGHT + 2) -ForeColour $FORECOLOUR_BORDER -BackColour $BACKCOLOUR_BORDER
-
+    ConBuffDrawFramedBox -Char $CHAR_EMPTY -x $GAMEAREA_COL2 -y $GAMEAREA_ROW1 -Width ($GAMEBOARD_WIDTH + 2) -Height ($GAMEBOARD_HEIGHT + 2) -FrameForeColour $FORECOLOUR_BORDER -FrameBackColour $BACKCOLOUR_BORDER -BoxForeColour $FORECOLOUR_GAMETEXT -BoxBackColour $BACKCOLOUR_GAMETEXT
     # draw scores area
-    ConBuffDrawBorderexFillBox -Char $CHAR_EMPTY -x $gacolx3 -y 2 -Width 8 -Height 9 -ForeColour $FORECOLOUR_BORDER -BackColour $BACKCOLOUR_BORDER
-    # draw next item
+    ConBuffDrawFramedBox -Char $CHAR_EMPTY -x $GAMEAREA_COL3 -y 2 -Width 8 -Height 9 -FrameForeColour $FORECOLOUR_BORDER -FrameBackColour $BACKCOLOUR_BORDER -BoxForeColour $FORECOLOUR_GAMETEXT -BoxBackColour $BACKCOLOUR_GAMETEXT
     # draw level
-    ConBuffDrawBorderexFillBox -Char $CHAR_EMPTY -x $gacolx3 -y 18 -Width 7 -Height 4 -ForeColour $FORECOLOUR_BORDER -BackColour $BACKCOLOUR_BORDER
-
+    ConBuffDrawFramedBox -Char $CHAR_EMPTY -x $GAMEAREA_COL3 -y 18 -Width 7 -Height 4 -FrameForeColour $FORECOLOUR_BORDER -FrameBackColour $BACKCOLOUR_BORDER -BoxForeColour $FORECOLOUR_GAMETEXT -BoxBackColour $BACKCOLOUR_GAMETEXT
 }
 
 
-function DrawScores() {
-    # display type
-    ConBuffWrite -Text "A-Type" -x ($gacolx1 + 2) -y 4 -ForeColour $FORECOLOUR_SCORE -BackColour $BACKCOLOUR_SCORE
-    
+function DrawGameNextTetromino {
+    ConBuffDrawFramedBox -Char $CHAR_EMPTY -x $GAMEAREA_COL3 -y 11 -Width 6 -Height 7 -FrameForeColour $FORECOLOUR_BORDER -FrameBackColour $BACKCOLOUR_BORDER -BoxForeColour $FORECOLOUR_SCORE -BoxBackColour $BACKCOLOUR_SCORE
+    ConBuffWrite -Text "NEXT" -x ($GAMEAREA_COL3 + 1) -y 12 -ForeColour $FORECOLOUR_GAMETEXT -BackColour $BACKCOLOUR_GAMETEXT
+    ConBuffDrawTetromino -Type $GameData.NextTetrominoType -x ($GAMEAREA_COL3 + 1)  -y 13 #-BackColour $BACKCOLOUR_GAMETEXT
+}
+
+
+function DrawGameText {
+<# draws game text data in conbuff #>
+    # display game type 
+    ConBuffWrite -Text ($GameData.Name) -x ($GAMEAREA_COL1 + 2) -y 4 -ForeColour $FORECOLOUR_GAMETEXT -BackColour $BACKCOLOUR_GAMETEXT     
     # display statistics
-    ConBuffWrite -Text "STATISTICS" -x 3 -y 8 -ForeColour $FORECOLOUR_SCORE -BackColour $BACKCOLOUR_SCORE
-    $_y = 9
-    for ($i = 0; $i -le $TETROMINOTYPE_MAXINTVALUE; $i++) {
-        $statsval = $global:GameData_ObjectStats[$i]
-        $statsvalstr = ConvertScoreToString -Value $statsval -NumDigits 3
-        $y = $_y + ($i * 2)
-        ConBuffDrawTetromino -Type ([TetrominoType]$i) -x ($gacolx1 + 2) -y $y
-        ConBuffWrite -Text $statsvalstr -x ($gacolx1 + 7) -y ($y + 1) -ForeColour $FORECOLOUR_SCORE -BackColour $BACKCOLOUR_SCORE
-    }
-    
+    ConBuffWrite -Text "STATISTICS" -x ($GAMEAREA_COL1 + 1) -y 8 -ForeColour $FORECOLOUR_GAMETEXT -BackColour $BACKCOLOUR_GAMETEXT
+    $y = 7
+    foreach ($_type in $GameData.Statistics.Keys) {
+        $_val = $GameData.Statistics[$_type]
+        $_valstr = ConvertScoreToString -Value $_val -NumDigits 3
+        $y += 2
+        ConBuffDrawTetromino -Type $_type -x ($GAMEAREA_COL1 + 2) -y $y #-BackColour $BACKCOLOUR_GAMETEXT
+        ConBuffWrite -Text $_valstr -x ($GAMEAREA_COL1 + 7) -y ($y + 1) -ForeColour $FORECOLOUR_GAMETEXT -BackColour $BACKCOLOUR_GAMETEXT
+    }    
     # display lines
-    [string]$LinesStr = ConvertScoreToString -Value $global:GameData_Lines -NumDigits 3
-    ConBuffWrite -Text " Lines-$LinesStr" -x ($gacolx2 + 1) -y 3 -ForeColour $FORECOLOUR_SCORE -BackColour $BACKCOLOUR_SCORE
-    
+    [string]$LinesStr = ConvertScoreToString -Value $GameData.Lines -NumDigits 3
+    ConBuffWrite -Text " Lines-$LinesStr" -x ($GAMEAREA_COL2 + 1) -y 3 -ForeColour $FORECOLOUR_SCORE -BackColour $BACKCOLOUR_SCORE
     # display score
-    ConBuffWrite -Text "TOP" -x ($gacolx3 + 1) -y 4 -ForeColour $FORECOLOUR_SCORE -BackColour $BACKCOLOUR_SCORE
-    [string]$TopScoreStr = ConvertScoreToString -Value $global:GameData_TopScore -NumDigits 6
-    ConBuffWrite -Text $TopScoreStr -x ($gacolx3 + 1) -y 5 -ForeColour $FORECOLOUR_SCORE -BackColour $BACKCOLOUR_SCORE
-    ConBuffWrite -Text "SCORE" -x ($gacolx3 + 1) -y 7 -ForeColour $FORECOLOUR_SCORE -BackColour $BACKCOLOUR_SCORE
-    [string]$ScoreStr = ConvertScoreToString -Value $global:GameData_Score -NumDigits 6
-    ConBuffWrite -Text $ScoreStr -x ($gacolx3 + 1) -y 8 -ForeColour $FORECOLOUR_SCORE -BackColour $BACKCOLOUR_SCORE
-
+    ConBuffWrite -Text "TOP" -x ($GAMEAREA_COL3 + 1) -y 4 -ForeColour $FORECOLOUR_SCORE -BackColour $BACKCOLOUR_SCORE
+    [string]$TopScoreStr = ConvertScoreToString -Value $GameData.TopScore -NumDigits 6
+    ConBuffWrite -Text $TopScoreStr -x ($GAMEAREA_COL3 + 1) -y 5 -ForeColour $FORECOLOUR_SCORE -BackColour $BACKCOLOUR_SCORE
+    ConBuffWrite -Text "SCORE" -x ($GAMEAREA_COL3 + 1) -y 7 -ForeColour $FORECOLOUR_SCORE -BackColour $BACKCOLOUR_SCORE
+    [string]$ScoreStr = ConvertScoreToString -Value $GameData.Score -NumDigits 6
+    ConBuffWrite -Text $ScoreStr -x ($GAMEAREA_COL3 + 1) -y 8 -ForeColour $FORECOLOUR_SCORE -BackColour $BACKCOLOUR_SCORE
     # display next
-    ConBuffDrawBorderexFillBox -Char $CHAR_EMPTY -x $gacolx3 -y 11 -Width 6 -Height 7 -ForeColour $FORECOLOUR_BORDER -BackColour $BACKCOLOUR_BORDER
-    ConBuffWrite -Text "NEXT" -x ($gacolx3 + 1) -y 12 -ForeColour $FORECOLOUR_SCORE -BackColour $BACKCOLOUR_SCORE
-    ConBuffDrawTetromino -Type $global:NextTetrominoType -x ($gacolx3 + 1)  -y 13
-
+    DrawGameNextTetromino
     # display level
-    ConBuffWrite -Text "LEVEL" -x ($gacolx3 + 1) -y 19 -ForeColour $FORECOLOUR_SCORE -BackColour $BACKCOLOUR_SCORE
-    [string]$LevelStr = ConvertScoreToString -Value $global:GameData_Level -NumDigits 3
-    ConBuffWrite -Text " $LevelStr " -x ($gacolx3 + 1) -y 20 -ForeColour $FORECOLOUR_SCORE -BackColour $BACKCOLOUR_SCORE
+    ConBuffWrite -Text "LEVEL" -x ($GAMEAREA_COL3 + 1) -y 19 -ForeColour $FORECOLOUR_SCORE -BackColour $BACKCOLOUR_SCORE
+    [string]$LevelStr = ConvertScoreToString -Value $GameData.Level -NumDigits 3
+    ConBuffWrite -Text " $LevelStr " -x ($GAMEAREA_COL3 + 1) -y 20 -ForeColour $FORECOLOUR_SCORE -BackColour $BACKCOLOUR_SCORE
 }
 
 
 function DrawGameBoard() {
 <# draws the game board in conbuff #>
-    for ($boardy = 0; $boardy -lt $GAMEAREA_HEIGHT; $boardy++) {
-        for ($boardx = 0; $boardx -lt $GAMEAREA_WIDTH; $boardx++) {
-            $val = $global:GameBoard[$boardx, $boardy]
-            $char = $TetrominoBoardChars[$val]
-            $forecolour = GetBoardObjectForeColour -Object $val
-            ConBuffWrite -Text $char -x ($gacolx2 + 1 + $boardx) -y ($garow + 1 + $boardy) -ForeColour $forecolour -BackColour $BACKCOLOUR_GAMEAREA
-            #SetCursorPos -x ($gacolx2 + 1 + $boardx) -y ($garow + 1 + $boardy)
-            #[Console]::BackgroundColor = $BACKCOLOUR_GAMEAREA
-            #[Console]::ForegroundColor = $forecolour
-            #[Console]::Write($char)
-    }
-    }
-}
-
-
-function PrintGameBoard {
-<# prints the game board on screen - quicker than a complete screen write#>
-
-    # save cursor position for later. we'll reset it back to this on our way out.
-    $cursorX = [Console]::CursorLeft
-    $cursorY = [Console]::CursorTop
-
-    for ($boardy = 0; $boardy -lt $GAMEAREA_HEIGHT; $boardy++) {
-        for ($boardx = 0; $boardx -lt $GAMEAREA_WIDTH; $boardx++) {
-            # update conbuff with updated char
-            $val = $global:GameBoard[$boardx, $boardy]
-            $char = $TetrominoBoardChars[$val]
-            $forecolour = GetBoardObjectForeColour -Object $val
-            $cx = $gacolx2 + 1 + $boardx
-            $cy = $garow + 1 + $boardy
-            ConBuffWrite -Text $char -x $cx -y $cy -ForeColour $forecolour -BackColour $BACKCOLOUR_GAMEAREA
-
-            # last printed val is diff to this, then print it
-            $old_forecol = $global:LastPrintedConBuff[$cx, $cy, $CONBUFF_IDX_FORECOL]
-            $old_backcol = $global:LastPrintedConBuff[$cx, $cy, $CONBUFF_IDX_BACKCOL]
-            $old_value = $global:LastPrintedConBuff[$cx, $cy, $CONBUFF_IDX_VALUE]
-            $old_value = if ([string]::IsNullOrEmpty($old_value)) { " " } else { $old_value.ToString() }
-            $_updatereq = ($old_forecol -ne $forecolour) -or ($old_backcol -ne ([ConsoleColor]::Black)) -or ($old_value -ne $char)
-            if ($_updatereq -eq $true) {
-                ConsoleWriteAt -x $cx -y $cy -Text $char -ForeColour $forecolour -BackColour $BACKCOLOUR_GAMEAREA
+    for ($boardy = 0; $boardy -lt $GAMEBOARD_HEIGHT; $boardy++) {
+        for ($boardx = 0; $boardx -lt $GAMEBOARD_WIDTH; $boardx++) {
+            [int]$piece = $GameData.Board[$boardy, $boardx]
+            [char]$char = $GameData.BoardChars[$boardy, $boardx]
+            if ($piece -in $TETROMINOTYPE_MININTVALUE..$TETROMINOTYPE_MAXINTVALUE) {
+                $forecolour = $TetrominoForeColours[[TetrominoType]$piece]
+                $backcolour = $TetrominoBackColours[[TetrominoType]$piece]
             }
-
-            # directly update lastconbuff
-            $global:LastPrintedConBuff[$cx, $cy, $CONBUFF_IDX_VALUE] = $global:ConBuff[$cx, $cy, $CONBUFF_IDX_VALUE]
-            $global:LastPrintedConBuff[$cx, $cy, $CONBUFF_IDX_FORECOL] = $global:ConBuff[$cx, $cy, $CONBUFF_IDX_FORECOL]
-            $global:LastPrintedConBuff[$cx, $cy, $CONBUFF_IDX_BACKCOL] = $global:ConBuff[$cx, $cy, $CONBUFF_IDX_BACKCOL]        
-        }
-    }  
-    
-    # reset cursor, if it's been moved
-    if (($cursorX -ne ([Console]::CursorLeft)) -or (($cursorY -ne ([Console]::CursorTop)))) {
-        SetCursorPos -x $cursorX -y $cursorY
-    }    
+            elseif ($piece -eq $GAMEBOARD_EXPLODEVAL) {
+                $forecolour = [ConsoleColor]::White
+                $backcolour = $BACKCOLOUR_GAMEAREA            
+                $char = $CHAR_FADE2
+            }
+            else {
+                $forecolour = $BACKCOLOUR_GAMEAREA
+                $backcolour = $BACKCOLOUR_GAMEAREA
+            }
+            ConBuffWrite -Text $char -x ($GAMEAREA_COL2 + 1 + $boardx) -y ($GAMEAREA_ROW1 + 1 + $boardy) -ForeColour $forecolour -BackColour $backcolour
+        }       
+    }
 }
 
 
-function HandleGameKeyChar {
-<# handles game keychars #>
+function GetFullBoardRows {
+<# returns all rows full #>
+    $fullrows = New-Object System.Collections.ArrayList    
+    for ($y = $GAMEBOARD_HEIGHT - 1; $y -ge 0; $y--) {
+        $xpos = 0
+        for ($x = 0; $x -lt $GAMEBOARD_WIDTH; $x++) {
+            if ($GameData.Board[$y, $x] -ne $GAMEBOARD_EMPTYVAL) {
+                $xpos++
+            }
+        }
+        # is full row ?
+        if ($xpos -eq $GAMEBOARD_WIDTH) {
+            [void]$fullrows.Add($y)
+        }
+    }
+    return $fullrows
+}
+
+
+
+#######################################################################################################
+# Menus
+#######################################################################################################
+
+
+function NewMenuObject {
+    <# creates an object for us to store menu data #>
+    param(
+        [string[]]$Items    
+    )
+        $Result = [pscustomobject]@{
+            Items = $Items
+            Index = 0        
+        }
+        return $Result
+    }
+    
+    
+    function GetNextMenuIndex {
+    <# returns the next non empty menu item index #>
+    param(
+        $MenuObject
+    )
+        if ($MenuObject.Items.Count -le 0) { return -1 }
+        if ($MenuObject.Items.Count -eq 1) { return 0 }
+        $index = $MenuObject.Index
+        do {
+            $index++
+            if ($index -ge $MenuObject.items.Count) { $index = 0 }
+        } while ([string]::IsNullOrWhiteSpace($MenuObject.Items[$index]))
+        return $index
+    }
+    
+    
+    function GetLastMenuIndex {
+    <# returns the last non empty menu item index #>
+    param(
+        $MenuObject
+    )
+        if ($MenuObject.Items.Count -le 0) { return -1 }
+        if ($MenuObject.Items.Count -eq 1) { return 0 }
+        $index = $MenuObject.Index
+        do {
+            $index--
+            if ($index -lt 0) { $index = $MenuObject.Items.Count - 1 }
+        } while ([string]::IsNullOrWhiteSpace($MenuObject.Items[$index]))
+        return $index
+    }
+    
+    
+    function ConBuffDrawMenu {
+    <# draws a menu in to conbuff #>
+    param(
+        $Menu,
+        [int]$x,
+        [int]$y,
+        [int]$Width,
+        [switch]$DrawSelected,
+        [switch]$CenterAligned
+    )
+        $wd2 = $Width / 2    
+        for ($menuy = 0; $menuy -lt $Menu.Items.Count; $menuy++) {
+            $xpos = if ($true -eq $CenterAligned.IsPresent) { $x + $wd2 - ($Menu.Items[$menuy].Length / 2) } else { $x }
+            ConBuffWrite -Text $Menu.Items[$menuy] -x $xpos -y ($y + $menuy) -ForeColour $FORECOLOUR_MENU -BackColour $BACKCOLOUR_MENU
+        }
+        if ($true -eq $DrawSelected.IsPresent) {
+            ConBuffWrite -Text $CHAR_ARROWRIGHT -x $x -y ($y + $Menu.Index) -ForeColour $FORECOLOUR_MENU -BackColour $BACKCOLOUR_MENU 
+            ConBuffWrite -Text $CHAR_ARROWLEFT -x ($x + $Width - 1) -y ($y + $Menu.Index) -ForeColour $FORECOLOUR_MENU -BackColour $BACKCOLOUR_MENU 
+        }
+    }
+    
+
+
+#######################################################################################################
+# Game Tetromino Stuff
+#######################################################################################################
+
+
+# Will the current tetromino fit at a given row and column on the game board
+function WillCurrentTetrominoFit {
 param(
-    [ConsoleKeyInfo]$Key
+    [int]$Row,
+    [int]$Column
 )
-    if ($Key.Key -eq [ConsoleKey]::DownArrow) {     
-        MoveTetrominoDown -KeyboardUsed      
-        ClearKeyboardBuffer                         
+    for ($r = 0; $r -lt $TETROMINO_LENGTH; $r++) {
+        for ($c = 0; $c -lt $TETROMINO_LENGTH; $c++) {
+            # skip if empty part of shape
+            if (-not $GameData.CurrentTetromino.Shape[$r][$c]) {
+                continue
+            }
+            # check row within bounds
+            $newr = $Row + $r
+            if ($newr -lt 0) {
+                continue
+            }
+            if ($newr -ge $GAMEBOARD_HEIGHT) {
+                return $false
+            }
+            # check colum within bounds
+            $newc = $Column + $c
+            if (-not ($newc -in 0..($GAMEBOARD_WIDTH - 1))) {
+                return $false
+            }
+            # is gameboard not empty at that spot - boom!
+            if ($GameData.Board[$newr, $newc] -ne $GAMEBOARD_EMPTYVAL) {
+                return $false
+            }
+        }
     }
-    # up arrow
-    elseif ($Key.Key -eq [ConsoleKey]::LeftArrow) {  
-        MoveTetrominoLeft          
-        ClearKeyboardBuffer                         
+    return $true
+}
+
+
+function Debug_PrintGameBoard {
+<# prints the game board by tetromino type #>
+    0..($GAMEBOARD_HEIGHT - 1) | ForEach-Object { @(for($x = 0; $x -lt $GAMEBOARD_WIDTH; $x++) { $GameData.Board[$_, $x] }) -join '' }
+}
+
+
+function PlaceCurrentTetromino {
+<# paints or removes the current tetromino on the board #>
+param(
+    [switch]$Remove                 # remove tetromino from board. 
+)
+    if (($null -eq $GameData.CurrentTetromino) -or ($null -eq $GameData.CurrentTetromino.Shape)) {
+        return
     }
-    # right arrow
-    elseif ($Key.Key -eq [ConsoleKey]::UpArrow) {     
-        RotateTetrominoClockwise               
-        ClearKeyboardBuffer                         
-    }
-    # left arrow
-    elseif ($Key.Key -eq [ConsoleKey]::RightArrow) {
-        MoveTetrominoRight
-        ClearKeyboardBuffer                         
-    }
-    elseif ($Key.Key -eq 'Escape') {
-        GameOver
-        ClearKeyboardBuffer                         
+    $Shape = GetTetrominoPrintShape -Shape $GameData.CurrentTetromino.Shape
+    for ($r = 0; $r -lt $TETROMINO_LENGTH; $r++) {
+        for ($c = 0; $c -lt $TETROMINO_LENGTH; $c++) {
+            if (-not $GameData.CurrentTetromino.Shape[$r][$c]) {
+                continue 
+            }
+            $_row = $GameData.CurrentTetromino.Row + $r
+            if (-not ($_row -in 0..($GAMEBOARD_HEIGHT -1))) {
+                continue
+            }
+            $_col = $GameData.CurrentTetromino.Column + $c
+            if (-not ($_col -in 0..($GAMEBOARD_WIDTH - 1))) {
+                continue
+            }
+            if ($Remove.IsPresent) {
+                $GameData.Board[$_row, $_col] = $GAMEBOARD_EMPTYVAL
+                $GameData.BoardChars[$_row, $_col] = $CHAR_EMPTY
+            }
+            else {
+                $GameData.Board[$_row, $_col] = [int]$GameData.CurrentTetromino.Type
+                $GameData.BoardChars[$_row, $_col] = $Shape[$r][$c]
+            }
+        }
     }
 }
 
 
-function DoAGame {
+function NewCurrentTetromino {
+<# creates a new tetromino by changing CurTetromino to use the type defined by NextTetrominoType #>
+    if ($null -eq $GameData.NextTetrominoType) { $GameData.NextTetrominoType = GetRandomTetrominoType }
+    $GameData.CurrentTetromino.Type = $GameData.NextTetrominoType
+    $GameData.CurrentTetromino.Shape = $TetrominoShapes[$GameData.NextTetrominoType]
+    $GameData.CurrentTetromino.Column = ($GAMEBOARD_WIDTH - $TETROMINO_LENGTH) / 2
+    $GameData.NextTetrominoType = GetRandomTetrominoType
+    # get the first bottom row that has something in it - uses ShapeStartRow as temp var before setting it properly
+    $GameData.CurrentTetromino.ShapeStartRow = -1
+    $GameData.CurrentTetromino.ShapeEndRow = -1
+    for ($y = 0; $y -lt $TETROMINO_LENGTH; $y++) {
+        for ($x = 0; $x -lt $TETROMINO_LENGTH; $x++) {
+            if ($GameData.CurrentTetromino.Shape[$y][$x]) {
+                if ($GameData.CurrentTetromino.ShapeStartRow -eq -1) {
+                    $GameData.CurrentTetromino.ShapeStartRow = $y
+                }
+                $GameData.CurrentTetromino.ShapeEndRow = $y
+            }
+        }
+    }
+    $GameData.CurrentTetromino.ShapeStartRow = [System.Math]::Max(0, $GameData.CurrentTetromino.ShapeStartRow)
+    $GameData.CurrentTetromino.ShapeEndRow = [System.Math]::Max(0, $GameData.CurrentTetromino.ShapeEndRow)
+    # set row 
+    $GameData.CurrentTetromino.Row = (-$TETROMINO_LENGTH) + $GameData.CurrentTetromino.ShapeEndRow
+}
 
-    $GAMELOOP_CONUPDATEMS = 1000;
 
-    # new-game
-    ResetGame
-    ClearGameBoard
-    
-    DrawGameBackground
-    DrawScores
+function ProcessFullRows {
+param(
+    [int[]]$FullRows
+)
+<# animates the removal of the lowest 4 complete lines, then returns the number of lines cleared. should never be called with more than 4 complete rows#>
+    if ($FullRows.Length -eq 0) {
+        return
+    }
+    # update score and other stats
+    $pointsForClearedRows = GetNumberOfPointsForLinesCleared -NumLinesCleared ([System.Math]::Min($MAXROWSCLEARED, $FullRows.Length)) 
+    AddPointsToScore -AddPoints $pointsForClearedRows
+    $GameData.Lines += ($fullrows.Count)
+    $GameData.Level = [Math]::Floor($GameData.Lines / 10) + 1
+    # fade out the each row
+    foreach ($fullrow in $FullRows) {
+        for ($x = 0; $x -lt $GAMEBOARD_WIDTH; $x++) {
+            $GameData.BoardChars[$fullrow, $x] = $GAMEBOARD_EXPLODEVAL
+        }
+    }
     DrawGameBoard
-
-    NewTetromino
-    PlaceCurTetromino
-    
-    PrintConBuff -Force
-
-    $_last_conupdatems = 0
-    $_last_tetrinoupdatems = $global:stopwatch.ElapsedMilliseconds    
-
-    $_last_score = 0    
-
-    while ($true) {
-
-        [bool]$doscreenupdate = $false
-    
-        # capture key press
-        if ([Console]::KeyAvailable) {           # always waits for next possible key, and then pauses for key wait
-            $key = [Console]::ReadKey($false)
-            HandleGameKeyChar -Key $Key    
+    PrintConBuff
+    Start-Sleep -Milliseconds 300
+    foreach ($fullrow in $FullRows) {
+        for ($x = 0; $x -lt $GAMEBOARD_WIDTH; $x++) {
+            $GameData.BoardChars[$fullrow, $x] = $GAMEBOARD_EMPTYVAL
         }
-
-        # update tetrino fall
-        $tetrinoms = $global:stopwatch.ElapsedMilliseconds;
-        if ($tetrinoms - $_last_tetrinoupdatems -ge (GetDelaymsForCurrentLevel)) {
-            $_last_tetrinoupdatems = $tetrinoms
-            MoveTetrominoDown
+    }
+    DrawGameBoard
+    PrintConBuff
+    Start-Sleep -Milliseconds 300
+    # remove the complete rows and reprint - copy non-empty rows in to temp array, then reassign
+    $desty = $GAMEBOARD_HEIGHT - 1
+    for ($y = ($GAMEBOARD_HEIGHT - 1); $y -ge 0; $y--) {
+        if ($fullrows.Contains($y)) { continue }                # skip copy if it's a full row
+        for ($x = 0; $x -lt $GAMEBOARD_WIDTH; $x++) {
+            $GameData.Board[$desty, $x] = $GameData.Board[$y, $x]
+            $GameData.BoardChars[$desty, $x] = $GameData.BoardChars[$y, $x]
         }
-
-        # score updates
-        if ($_last_score -ne $global:GameData_Score) {
-            $_last_score = $global:GameData_Score
-            DrawScores            
-            $doscreenupdate = $true
+        $desty--
+    }
+    while ($desty -ge 0) {                                       # fill rows we didn't copy to with empty spaces
+        for ($x = 0; $x -lt $GAMEBOARD_WIDTH; $x++) {
+            $GameData.Board[$desty, $x] = $GAMEBOARD_EMPTYVAL
+            $GameData.BoardChars[$desty, $x] = $CHAR_EMPTY
         }
-
-        # console screen updates
-        $conupdatems = $global:stopwatch.ElapsedMilliseconds;
-        if ($conupdatems - $_last_conupdatems -ge $GAMELOOP_CONUPDATEMS) {
-            $_last_conupdatems = $conupdatems
-            DrawGameBackground
-            DrawScores
-            DrawGameBoard
-            $doscreenupdate = $true
-        }
-
-        if ($doscreenupdate -eq $true) {
-            PrintConBuff
-        }
-
-        # sleep per loop (?)
-        Start-Sleep -Milliseconds 1;
-    }    
+        $desty--
+    }
+    DrawGameBoard    
+    PrintConBuff
 }
+
+
+
+function MoveTetrominoDown {  
+<# moves the tetromino down a row. returns true if successful, false if it's game over#>
+param(
+    [switch]$CalledByDropTimer           # true if this function was called by the drop timer
+) 
+    # remove tetromino from current position, then check if will fit in it's new proposed position.
+    PlaceCurrentTetromino -Remove
+    $willfit = WillCurrentTetrominoFit -Row ($GameData.CurrentTetromino.Row + 1) -Column $GameData.CurrentTetromino.Column
+    if ($true -eq $willfit) {
+        $GameData.CurrentTetromino.Row++
+        PlaceCurrentTetromino
+        return $true
+    }
+    # we didn't fit, so we rest the shape on the bottom and draw a new one.    
+    PlaceCurrentTetromino            
+    # if we're on the top row then we can't add any more tetrominos - that's game over.
+    if ($GameData.CurrentTetromino.Row + $GameData.CurrentTetromino.ShapeStartRow -le 0) {
+        return $false
+    }
+    # add points if this was a non-timer drop
+    if (-not $CalledByDropTimer.IsPresent) {
+        AddPointsToScore -PointToAdd ($PointsPerNewOnKeyDown * $GameData.Level)        
+    }
+    # remove full lines
+    $fullrows = GetFullBoardRows
+    if ($fullrows.Count -gt 0) {
+        ProcessFullRows -FullRows $fullrows
+    }
+    # create new tetromino
+    NewCurrentTetromino
+    $willfit = WillCurrentTetrominoFit -Row $GameData.CurrentTetromino.Row -Column $GameData.CurrentTetromino.Column
+    if ($false -eq $willfit) {
+        PlaceCurrentTetromino
+        return $false
+    }    
+    PlaceCurrentTetromino
+    $GameData.Statistics[$GameData.CurrentTetromino.Type]++
+    return $true
+}
+
+
+function MoveTetrominoLeft {
+<# slide to the left #>
+PlaceCurrentTetromino -Remove
+    $willfit = WillCurrentTetrominoFit -Row $GameData.CurrentTetromino.Row -Column ($GameData.CurrentTetromino.Column  - 1)
+    if ($willfit) {
+        $GameData.CurrentTetromino.Column--
+    }
+    PlaceCurrentTetromino
+    return [bool]($willfit)
+}
+
+
+function MoveTetrominoRight {
+<# slide to the right #>
+    PlaceCurrentTetromino -Remove
+    $willfit = WillCurrentTetrominoFit -Row $GameData.CurrentTetromino.Row -Column ($GameData.CurrentTetromino.Column  + 1)
+    if ($willfit) {
+        $GameData.CurrentTetromino.Column++
+    }
+    PlaceCurrentTetromino
+    return [bool]($willfit)
+}
+
+
+function RotateTetrominoClockwise {
+<# xris xross - rotates the shape of the current tetromino clockwise (if it fits) #>
+    PlaceCurrentTetromino -Remove
+    $old_shape = $GameData.CurrentTetromino.Shape
+    $new_shape = @((New-Object int[](4)), (New-Object int[](4)), (New-Object int[](4)), (New-Object int[](4)))
+    # rotate your owl!
+    for ($r = 0; $r -lt $TETROMINO_LENGTH; $r++) {
+        for ($c = 0; $c -lt $TETROMINO_LENGTH; $c++) {
+            $new_shape[$c][($TETROMINO_LENGTH - 1 - $r)] = $old_shape[$r][$c]            
+        }
+    }
+    $GameData.CurrentTetromino.Shape = $new_shape
+    # if we don't fit, revert back to old shape
+    $willfit = WillCurrentTetrominoFit -Row $GameData.CurrentTetromino.Row -Column $GameData.CurrentTetromino.Column
+    if (-not $willfit) {
+        $GameData.CurrentTetromino.Shape = $old_Shape
+    }
+    PlaceCurrentTetromino
+    return [bool]($willfit)
+}
+
+
+
+
+#######################################################################################################
+# Games
+#######################################################################################################
+
 
 
 function GameOver {
-    $global:GracefulGameFinish = $true  
+    # end the current game
+    $GameData.EndTime = [datetime]::Now
+    DrawGameText
+    DrawGameBoard
     # print game over and wait for a second
-    SetCursorPos -x 0 -y 0
-    ConBuffDrawBorderexFillBox -Char $CHAR_EMPTY -x ($gacolx2 - 1) -y ($garow + ($GAMEAREA_HEIGHT / 2) - 1)  -Height 3 -Width 14 -ForeColour $FORECOLOUR_BORDER -BackColour $BACKCOLOUR_BORDER 
-    ConBuffWrite -Text "Game Over!" -x ($gacolx2 + 1) -y ($garow + ($GAMEAREA_HEIGHT / 2)) -ForeColour $FORECOLOUR_GAMETEXT -BackColour $BACKCOLOUR_GAMETEXT
+    [console]::SetCursorPosition(0, 0)
+    ConBuffDrawFramedBox -Char $CHAR_EMPTY -x ($GAMEAREA_COL2 - 1) -y ($GAMEAREA_ROW1 + ($GAMEBOARD_HEIGHT / 2) - 1)  -Height 3 -Width 14 -BoxForeColour $FORECOLOUR_GAMETEXT -BoxBackColour $BACKCOLOUR_GAMEAREA -FrameForeColour $FORECOLOUR_BORDER -FrameBackColour $BACKCOLOUR_BORDER
+    ConBuffWrite -Text "Game Over!" -x ($GAMEAREA_COL2 + 1) -y ($GAMEAREA_ROW1 + ($GAMEBOARD_HEIGHT / 2)) -ForeColour $FORECOLOUR_GAMETEXT -BackColour $BACKCOLOUR_GAMETEXT
     PrintConBuff
     Start-Sleep -Seconds 1;
-    $c = 3
-    while ($c--) { 
-        Start-Sleep -Milliseconds 10
-        ClearKeyboardBuffer 
-    }
+    # clear kb buffer a couple of times
+    ClearKeyboardBuffer 
+    Start-Sleep -Milliseconds 10    
+    ClearKeyboardBuffer
     # wait for any key to return to main menu
     while ($true) {
         if ([Console]::KeyAvailable) {
@@ -1309,73 +1159,338 @@ function GameOver {
 }
 
 
-
-
-#######################################################################################################
-# START OF SCRIPT
-#######################################################################################################
-
-
-$global:stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
-
-Clear-Host
-
-$SavedForeColour = [Console]::ForegroundColor
-$SavedBackColour = [Console]::BackgroundColor
-$SavedCursorVisible = GetCursorVisible
-
-$ErrorActionPreference = 'Stop'
-try {    
-    # init
-    
-    SetCursorVisible -Visible $false
-    #ClearConBuff
-    UpdateLastConBuff
-    PrintConBuff
-
-    while ($true) {
-        # game main menu
-        $menuoption = DoMainMenu
-        if ($menuoption -eq 'Quit') {
-            $global:GracefulGameFinish = $true
-            break
-        }       
-        # main game
-        if ($menuoption -eq 'AGame') {
-            try {
-                DoAGame
+function HandleGameKey {
+<# handles a game key, and returns true if handled #>
+param(
+    [ConsoleKeyInfo]$KeyInfo
+)
+    switch ($KeyInfo.Key) {
+        'DownArrow' {
+            if (-not (MoveTetrominoDown)) {
+                GameOver
             }
-            catch {
-                if ($_.ToString() -eq 'Game Over') {     
-                    $global:GracefulGameFinish = $true   
-                }            
+            return $true
+        }
+        'LeftArrow' {
+            MoveTetrominoLeft
+            return $true
+        }
+        'RightArrow' {
+            MoveTetrominoRight
+            return $true
+        }
+        'UpArrow' {
+            RotateTetrominoClockwise
+            return $true
+        }
+        'Escape' {
+            GameOver
+            return $false
+        }
+        default {
+            return $false
+        }
+    }
+}
+
+
+
+function DoAGame {
+
+    ## begin DoAGame
+    ResetGameData
+    $GameData.StartTime = [datetime]::Now
+    DrawGameBackground
+
+    NewCurrentTetromino
+    PlaceCurrentTetromino
+
+    $last_tetrominofallms = $Stopwatch.ElapsedMilliseconds
+    $cur_tetrominofalldelayms = GetDelaymsForCurrentLevel
+
+    [bool]$updatereq = $true
+    do {
+
+        # update the screen ?
+        if ($true -eq $updatereq) {
+            $updatereq = $false
+            DrawGameBoard
+            DrawGameText
+            PrintConBuff
+            [console]::SetCursorPosition(0, 0)
+        }
+        Start-Sleep -Milliseconds 5
+
+        $millis_now = $Stopwatch.ElapsedMilliseconds
+
+        if ([Console]::KeyAvailable) {
+            $_key = [Console]::ReadKey($false)
+            if ($true -eq (HandleGameKey -KeyInfo $_key)) {            
+                ClearKeyboardBuffer
+                $updatereq = $true
+            }
+        }
+
+        # tetromino fall ?
+        $tetrominofallms = $millis_now
+        if ($tetrominofallms - $last_tetrominofallms -ge $cur_tetrominofalldelayms) {
+            $last_tetrominofallms = $tetrominofallms
+            if (-not (MoveTetrominoDown -CalledByDropTimer)) {
+                GameOver
+            }
+            $updatereq = $true
+        }
+
+    } while ($true)
+
+}
+
+
+
+
+#######################################################################################################
+# Game - Main Menu
+#######################################################################################################
+
+
+# http://patorjk.com/software/taag/
+$TITLEMASK = @(
+    "           xxxx   xxx"
+    "           x   x x"
+    "           xxxx   xxx"
+    "           x         x"
+    "           x     xxxx"
+    ""	   
+    "xxxxxx xxxx xxxxxx xxxx  xxx  xxx "
+    "  xx   x      xx   x   x  x  x    "
+    "  xx   xxx    xx   xxxx   x   xxx "
+    "  xx   x      xx   x x    x      x"
+    "  xx   xxxx   xx   x  xx xxx xxxx " 
+)
+
+
+# our main menu options
+Enum MainMenuOption {
+    NewAGame
+    NewBGame
+    Controls
+    Quit
+}
+
+# main menu value to name lookup
+$MainMenuOptionNames =@{
+    [MainMenuOption]::NewAGame = "New A Game"
+    [MainMenuOption]::Controls = "Controls"
+    [MainMenuOption]::Quit = "Quit"
+}
+
+# our main menu object - this is kinda how it looks on screen
+$MainMenu = NewMenuObject -Items @(
+    $MainMenuOptionNames[[MainMenuOption]::NewAGame], 
+    "", 
+    $MainMenuOptionNames[[MainMenuOption]::Controls], 
+    "", 
+    $MainMenuOptionNames[[MainMenuOption]::Quit]
+)
+
+
+
+function DoMainMenu {
+<# This does the Menu you see before playing any games #>
+
+    # the different types of menu displayed
+    Enum MenuScreenType {
+        Main
+        Controls
+    }    
+    # the currently displayed menu    
+    $CurrentMenuDisplayed = [MenuScreenType]::Main
+    # a menu object for displaying our controls - not really a menu, but works as one.
+    $ControlsMenu = NewMenuObject -Items @(
+        ("   {0}    Rotate" -f $CHAR_ARROWUP)
+        ("   {0}    Down" -f $CHAR_ARROWDOWN)
+        ("   {0}    Right" -f $CHAR_ARROWRIGHT)
+        ("   {0}    Left" -f $CHAR_ARROWLEFT)
+        "  ESC   Quit"
+    )
+    # should the top score currently be displayed on screen. 
+    [bool]$DisplayTopScore = $false
+
+
+    function Paint {
+    <# local paint, to paint the currently displayed menu #>
+        # draw the background and title
+        ClearConBuff
+        CopyToConBuff -Source $FancyBackground
+        ConBuffDrawFromMask -x 0 -y 2 -Char $CHAR_FADE2 -Mask $TITLEMASK -ForeColour $FORECOLOUR_TITLESHADOW -BackColour $BACKCOLOUR_TITLESHADOW
+        ConBuffDrawFromMask -x 1 -y 1 -Char $CHAR_SOLIDBLOCK -Mask $TITLEMASK -ForeColour $FORECOLOUR_TITLE -BackColour $BACKCOLOUR_TITLE
+        # display top score, if there is one
+        if ($true -eq $DisplayTopScore) {
+            $_score_str = "Top Score: " + [string]::Format('{0:N0}', $GameData.TopScore)
+            ConBuffWrite -Text $_score_str -x (($CONBUFF_WIDTH / 2) - ($_score_str.Length / 2)) -y 14 -ForeColour $FORECOLOUR_SCORE -BackColour $BACKCOLOUR_BACKGROUND
+        }
+        # draw menu and content
+        ConBuffDrawFramedBox -Char $CHAR_EMPTY -x 8 -y 16 -Width 20 -Height 9 -BoxForeColour $FORECOLOUR_BORDER -BoxBackColour $BACKCOLOUR_BORDER -FrameForeColour $FORECOLOUR_BACKGROUND -FrameBackColour $BACKCOLOUR_BORDER
+        switch ($CurrentMenuDisplayed) {
+            'Main' {
+                ConBuffDrawMenu -Menu $MainMenu -x 10 -y 18 -Width 16 -DrawSelected -CenterAligned
+                break
+            }
+            'Controls' {
+                ConBuffDrawMenu -Menu $ControlsMenu -x 10 -y 18 -Width 16
+                break
+            }
+        }
+        # write to screen
+        PrintConBuff
+    }
+
+    ## begin DoMainMenu
+
+    [bool]$updatereq = $true                            # is a screen update required
+    [bool]$kbHandled = $false
+    $millis_scoreblink = $Stopwatch.ElapsedMilliseconds
+    while ($true) {
+
+        $millis_now = $Stopwatch.ElapsedMilliseconds
+        
+        # blink the top score?
+        if ($GameData.TopScore -gt 0) {
+            if ($millis_now - $millis_scoreblink -ge $MAINMENU_TOPSCORE_BLINKMS) {
+                $millis_scoreblink = $millis_now
+                $DisplayTopScore = -not $DisplayTopScore
+                $updatereq = $true
+            }
+        }
+
+        # handle key press
+        if ([Console]::KeyAvailable) {
+            $key = [Console]::ReadKey($false)
+            switch ($CurrentMenuDisplayed) {
+                'Controls' {
+                    # escape out to main menu
+                    if ($key.Key -eq [consolekey]::Enter) {
+                        $CurrentMenuDisplayed = [MenuScreenType]::Main
+                        $kbHandled = $true
+                        break                     
+                    }
+                }
+                'Main' {
+                    # select menu item below
+                    if ($key.Key -eq [consolekey]::DownArrow) {
+                        $MainMenu.Index = GetNextMenuIndex -MenuObject $MainMenu
+                        $kbHandled = $true
+                        break
+                    }
+                    # select menu item above
+                    elseif ($key.Key -eq [consolekey]::UpArrow) {
+                        $MainMenu.Index = GetLastMenuIndex -MenuObject $MainMenu
+                        $kbHandled = $true
+                        break
+                    }
+                    # select the menu item
+                    elseif ($key.Key -eq [consolekey]::Enter) {                        
+                        switch ($MainMenu.Index) {
+                            0 { return "AGame" }
+                            2 {
+                                $CurrentMenuDisplayed = [MenuScreenType]::Controls
+                                $kbHandled = $true
+                                break
+                            }
+                            4 { return "Quit" }
+                        }
+                    }
+                }
+            }
+        }
+
+        if ($true -eq $kbHandled) {
+            ClearKeyboardBuffer
+            $kbHandled = $false
+            $updatereq = $true
+        }
+        
+        # update the screen ?
+        if ($true -eq $updatereq) {
+            $updatereq = $false
+            Paint
+        }
+
+        Start-Sleep -Milliseconds 5
+    }
+
+}
+
+
+
+
+#######################################################################################################
+# Fancy Background
+#######################################################################################################
+
+
+# this stores the game background screen
+$FancyBackground = NewConBuffObject
+
+$fancy_background_chars = $CHAR_EMPTY, $CHAR_FADE3, $CHAR_FADE2, $CHAR_FADE1, $CHAR_SOLIDBLOCK
+for ($idx = 0; $idx -lt $CONBUFF_SIZE; $idx++) {
+    $_randpos = Get-Random -Minimum 0 -Maximum $fancy_background_chars.Length
+    $FancyBackground.Buffer[$idx] = [int]($fancy_background_chars[$_randpos])
+    $FancyBackground.ForeColours[$idx] = [ConsoleColor]$FORECOLOUR_BACKGROUND
+    $FancyBackground.BackColours[$idx] = [ConsoleColor]$BACKCOLOUR_BACKGROUND
+}
+
+
+
+
+#######################################################################################################
+# BEGIN
+#######################################################################################################
+
+
+try {
+    ## init screen
+    SetCursorVisible -Visible $false
+    Clear-Host
+    [console]::SetCursorPosition(0, 0)    
+    ResetLastConBuff        # init last print buffer to a char that's unliklely to be printed
+
+    # init game stuff
+    ResetGameData
+
+    # start main game
+    while ($true) {
+        $menuOption = DoMainMenu
+        switch ($menuOption) {
+            'AGame' {
+                $GameData = $AllGameData[[GameType]::AGame]
+                try {
+                    DoAGame
+                }
+                catch {
+                    # if the game didnt' end cleanly, rethrow the exception                    
+                    if ($GameData.EndTime -eq [datetime]::MinValue) {
+                        throw $_
+                    }
+                }
+                break
+            }
+            'Quit' {
+                return
             }
         }
     }
-          
+
 }
-catch {
-    $caught_thing = $_
-    throw $caught_thing
+catch {    
+    $caught_thing = $_   
+    throw $caught_thing 
 }
-finally {    
-
-    # clean-up the console if we finished cleanly
-    if ($global:GracefulGameFinish -eq $true) {
-        # clear screen
-        ClearConBuff    
-        PrintConBuff -Force -NoCursorReset
-        [Console]::WriteLine()        
-    }
-
-    # restore screen and cursor settings    
-    [Console]::BackgroundColor = $SavedBackColour
-    [Console]::ForegroundColor = $SavedForeColour
-    SetCursorVisible -Visible $SavedCursorVisible
-
-    # write top score to file
-    if ($global:GracefulGameFinish -eq $true) {
-        $global:GameData_TopScore | Out-File -FilePath $TOPSCORE_FILENAME -Force -ErrorAction SilentlyContinue
-    }
-
+finally {
+    # reset console
+    [console]::ForegroundColor = $SAVED_FORECOLOUR
+    [console]::BackgroundColor = $SAVED_BACKCOLOUR
+    [console]::SetCursorPosition($CONBUFF_WIDTH, $CONBUFF_HEIGHT);
+    SetCursorVisible -Visible $SAVED_CURSORVISIBLE 
+    "" | Out-Host
 }
