@@ -5,13 +5,14 @@
     Quick and dirty PowerShell Tetris
     Use arrow keys - left, right, down, up == rotate.
     Escape == quit
-    No music
+    With music
 #>
 
 
 $CONBUFF_WIDTH = 36
 $CONBUFF_HEIGHT = 27
 
+$MUSIC_ENABLED = $true
 
 $FORECOLOUR_BACKGROUND = 'Cyan';        $BACKCOLOUR_BACKGROUND = 'DarkGray'
 $FORECOLOUR_TITLE = 'White';            $BACKCOLOUR_TITLE = 'Black'
@@ -32,6 +33,262 @@ $MAINMENU_TOPSCORE_BLINKMS = 1000           # how fast top score blinks on the m
 
 
 $Stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+
+
+
+#######################################################################################################
+# Music
+#######################################################################################################
+
+
+[int]$SOUND_DEFAULTVOLUME = 16383
+
+$SOUND_NUM = 45
+
+
+Add-Type -TypeDefinition @"
+    using System.Runtime.InteropServices;
+    using System;
+    using System.Collections.Generic;
+    using System.IO;
+    using System.Linq;
+ 
+    // Helper class to generate WAV files by generating sequences of combined sine waves.
+    // Faster than doing this in PowerShell.
+    public class SoundHelper {
+
+        public const double TAU = 2 * Math.PI;
+
+        public const int SOUND_FORMATCHUCKSIZE = 16;
+        public const int SOUND_HEADERSIZE = 8;
+        public const int SOUND_WAVESIZE = 4;
+        public const int SOUND_SAMPLESPERSEC = 44100;
+        public const short SOUND_TRACKS = 1;
+        public const short SOUND_BITSPERSAMPLE = 16;
+        public const short SOUND_FORMATTYPE = 1;
+        public const short SOUND_FRAMESIZE = (short)(SOUND_TRACKS * ((SOUND_BITSPERSAMPLE + 7) / 8));
+        public const int SOUND_BYTEPERSECOND = SOUND_SAMPLESPERSEC * SOUND_FRAMESIZE;
+
+        public struct Note {
+            public int DurationMs;                     // ms to play note for
+            public short[] Frequencies;                // list of frequencies to play 
+        }
+
+        public static MemoryStream Create2ChannelStream(Note[] ch1, Note[] ch2, int volume = 16383) {
+            /*
+            * count is the number of items in the freqs and ms arrays.
+            * ch1freqs and ch2freqs contains the frequencies for ch1 and ch2.
+            * - value is an array of uint16[] values with represent frequencies to 
+            * ch2ms and ch2ms contain the durations for each frequency in ch1 and ch2.
+            * volume is how loud we want to play our tone
+            */
+
+            int count = Math.Max(ch1.Length, ch2.Length);
+            if (count <= 0)
+               return null;
+
+            // calc size values
+            int sumdurationms = Math.Max(ch1.Sum(x => x.DurationMs), ch2.Sum(x => x.DurationMs));
+            int samples = (int)((decimal)SOUND_SAMPLESPERSEC * sumdurationms / 1000);
+            int dataChunkSize = samples * SOUND_FRAMESIZE;
+            int fileSize = SOUND_WAVESIZE + SOUND_HEADERSIZE + SOUND_FORMATCHUCKSIZE + SOUND_HEADERSIZE + dataChunkSize;
+
+            // create streams
+            var mStrm = new MemoryStream();
+            BinaryWriter writer = new BinaryWriter(mStrm);
+
+            // write the wav header
+            writer.Write(0x46464952);
+            writer.Write(fileSize);
+            writer.Write(0x45564157);
+            writer.Write(0x20746D66);
+            writer.Write(SOUND_FORMATCHUCKSIZE);
+            writer.Write(SOUND_FORMATTYPE);
+            writer.Write(SOUND_TRACKS);
+            writer.Write(SOUND_SAMPLESPERSEC);
+            writer.Write(SOUND_BYTEPERSECOND);
+            writer.Write(SOUND_FRAMESIZE);
+            writer.Write(SOUND_BITSPERSAMPLE);
+            writer.Write(0x61746164);
+            writer.Write(dataChunkSize);
+
+            // init - start with the first item
+            List<short> freqsToCombine = new List<short>();
+            int ch1_idx = 0;
+            int ch2_idx = 0;
+            int durationms1 = ch1[ch1_idx].DurationMs;
+            int durationms2 = ch2[ch2_idx].DurationMs;
+
+            while ((ch1_idx < ch1.Length) || (ch2_idx < ch2.Length)) {      // yes, or
+
+                // calc how long we should play the current selection of notes...
+                // until the next duration change by either channel.
+                int diff = Math.Abs(durationms1 - durationms2);
+                int thisdurationms = Math.Max(durationms1, durationms2) - diff;
+
+                // get freqs to combine from each channel
+                freqsToCombine.Clear();
+                if (ch1_idx < ch1.Length) {
+                    foreach (short freq in ch1[ch1_idx].Frequencies) {
+                        freqsToCombine.Add(freq);
+                    }
+                }
+                if (ch2_idx < ch2.Length) {
+                    foreach (short freq in ch2[ch2_idx].Frequencies) {
+                        freqsToCombine.Add(freq);
+                    }
+                }
+                if (freqsToCombine.Count == 0) {            // if not freqs for this duration, use silence
+                    freqsToCombine.Add(0);
+                }
+
+                // generate sound for thisduration - combine freqs and write to stream
+                {
+                        int numfreqs = freqsToCombine.Count;
+                        double[] thetas = new double[numfreqs];
+                        double[] samplevals = new double[numfreqs];
+                        for (int f = 0; f < numfreqs; f++) {
+                            thetas[f] = freqsToCombine[f] * TAU / (double)SOUND_SAMPLESPERSEC;
+                        }
+                        int numsamplesthis = (int)((decimal)SOUND_SAMPLESPERSEC * thisdurationms / 1000);
+                        double amp = volume >> 2; // so we simply set amp = volume / 2
+                        for (int step = 0; step < numsamplesthis; step++) {
+                            int samplevalsum = 0;
+                            for (int f = 0; f < numfreqs; f++) {
+                                samplevals[f] = amp * Math.Sin(thetas[f] * (double)step);
+                                samplevalsum += (short)samplevals[f];
+                            }
+                            short s = (short)samplevalsum;
+                            writer.Write(s);
+                        }
+                }
+
+                // ? should we update any indices
+                durationms1 -= thisdurationms;
+                if (durationms1 <= 0) {
+                    ch1_idx++;
+                    durationms1 = ch1_idx < ch1.Length ? ch1[ch1_idx].DurationMs : 0;
+                }
+                durationms2 -= thisdurationms;
+                if (durationms2 <= 0) {
+                    ch2_idx++;
+                    durationms2 = ch2_idx < ch2.Length ? ch2[ch2_idx].DurationMs : 0;
+                }
+            }
+
+            // go to beginning of stream and return
+            mStrm.Seek(0, SeekOrigin.Begin);      
+            return mStrm;
+        }
+    }
+"@
+
+
+$global:Volume = $SOUND_DEFAULTVOLUME
+
+# the current music player
+$global:MusicPlayer = $null
+
+
+# lookup of notes to base frequency
+$NotesToFreq = @{
+    "C" = 16.35; "C#" = 17.32; "Db" = 17.32; "D" = 18.35; "D#" = 19.45; "Eb" = 19.45;
+    "E" = 20.60; "F" = 21.83; "F#" = 23.12; "Gb" = 23.12; "G" = 24.50; "G#" = 25.96;
+    "Ab" = 25.96; "A" = 27.50; "A#" = 29.14; "Bb" = 29.14; "B" = 30.87; 'R' = 0
+}
+
+
+function ConvertNoteToFrequency {
+<# returns the frequency for a given note in the natural note range - i.e. e4 == 330 #>
+param(
+    [string]$Note
+)
+    if ([string]::IsNullOrWhiteSpace($Note)) {
+        return 0
+    }
+    $_regex = [regex]::match($Note, "^([a-zA-Z]+#?|b?)(\d+)$")
+    $_note = $_regex.groups[1].Value
+    $_octave = $_regex.groups[2].Value
+    $frequency = $NotesToFreq[$_note] * [Math]::Pow(2, $_octave)
+    return $frequency
+}
+
+
+function ConvertNoteSequenceToFrequencySequence {
+<# converts music data I've written in to frequency data. no error checking of data contained in Music #>
+param(
+    [string[]]$NoteSequence = @()
+)
+    # check we have something to work with
+    if (($null -eq $NoteSequence) -or ($NoteSequence.Count -eq 0)) {
+        return $null
+    }
+
+    $data = New-Object Collections.Generic.List[SoundHelper+Note]
+
+    # get frequency data for the music
+    # freq data is a structure of duration, + and array of frequencies of which to play
+    $durationsum = 0
+    foreach ($notegroup in $NoteSequence) {
+        # split by |                                        - i.e. "8|e4|e2" becomes 8, e4, and e2
+        $_split = @($notegroup -split '\|')
+        if ($_split.Count -eq 0) {
+            continue
+        }
+        # extract note data from $_split    
+        $duration = [int]($_split[0]) * $SOUND_NUM
+        $durationsum += $duration
+        $num_notes = $_split.Count - 1
+        $freqs = [int16[]]::new($num_notes)
+        # add freq data for each note
+        for ($idx = 0; $idx -lt $num_notes; $idx++) {    
+            $freqs[$idx] = if (($idx + 1) -lt $_split.Count) { ConvertNoteToFrequency -Note $_split[($idx + 1)] } else { 0 }
+        }
+        $note = New-Object SoundHelper+Note
+        $note.DurationMs = $duration
+        $note.Frequencies = $freqs
+        $data.Add($note)      
+    }      
+    return $data
+}
+
+
+function Create2ChannelStream {
+<# creates an audio stream from 2 frequency sequences#>
+param(
+    $Channel0,
+    $Channel1
+)
+    $stream = [SoundHelper]::Create2ChannelStream($Channel0, $Channel1)
+    return $stream
+}
+
+
+function PlayMusic {
+param(
+    [System.IO.MemoryStream]$Stream,
+    [switch]$Loop
+)
+    if ($false -eq $MUSIC_ENABLED) {
+        return
+    }
+    $global:MusicPlayer = New-Object System.Media.SoundPlayer($Stream)
+    if ($Loop.IsPresent) {
+        $global:MusicPlayer.PlayLooping()
+    }
+    else {
+        $global:MusicPlayer.Play()
+    }
+}
+
+
+function StopMusic {
+    if ($null -ne $global:MusicPlayer) {
+        $global:MusicPlayer.Stop()
+        $global:MusicPlayer = $null
+    }
+}
+
 
 
 
@@ -308,11 +565,10 @@ param(
                 $LastConBuff.ForeColours[$idx] = $new_forecol
                 $LastConBuff.BackColours[$idx] = $new_backcol
             }
-        }
+        }        
+        [console]::ForegroundColor = $SAVED_FORECOLOUR     # this stops colour bleed at the end of rows
+        [console]::BackgroundColor = $SAVED_BACKCOLOUR
     }
-    #######################
-    [console]::ForegroundColor = $SAVED_FORECOLOUR
-    [console]::BackgroundColor = $SAVED_BACKCOLOUR
 }
 
 
@@ -338,7 +594,7 @@ public enum TetrominoType {
 "@
 $TETROMINOTYPE_MAXINTVALUE = [TetrominoType].GetEnumValues() | ForEach-Object { [int]$_ } | Sort-Object | Select-Object -Last 1
 $TETROMINOTYPE_MININTVALUE = [TetrominoType].GetEnumValues() | ForEach-Object { [int]$_ } | Sort-Object | Select-Object -First 1
-$TETROMINOTYPE_NUMVALUES = [TetrominoType].GetEnumValues().Count
+#$TETROMINOTYPE_NUMVALUES = [TetrominoType].GetEnumValues().Count
 
 $TETROMINO_LENGTH = 4                     # x and y size of a tetromino
 $TETROMINO_CHAR = $CHAR_SOLIDBLOCK
@@ -441,8 +697,6 @@ param(
 
 
 
-
-
 #######################################################################################################
 # Game Data
 #######################################################################################################
@@ -496,7 +750,7 @@ $AllGameData[[GameType]::AGame].Name = "A-Type"
 
 function ResetGameData {
 <# resets game data #>
-    $GameData = $AllGameData[[GameType]::AGame]
+    $global:GameData = $global:AllGameData[[GameType]::AGame]
     $GameData.Score = 0
     $GameData.Level = 1
     $GameData.Lines = 0
@@ -512,7 +766,6 @@ function ResetGameData {
     $GameData.StartTime = [datetime]::MinValue
     $GameData.EndTime = [datetime]::MinValue
 }
-
 
 
 
@@ -1131,8 +1384,20 @@ function RotateTetrominoClockwise {
 #######################################################################################################
 
 
+# game music
+$music_tico = @{
+    ch0 = @(
+        "4|e4","4|d#4","4|e4","4|f4","4|e4","12|e5|a4","4|e4","4|d#4","4|e4","4|f4","4|e4","12|e5|g#4","4|e4","4|d#4","4|e4","4|f4","4|e4","4|d5","4|b4","4|g#4","4|f4","4|d4","4|c#4","4|c4","8|a4|e4","4|a4|e4","4|c4","4|a4","4|g#4","4|g4","4|f4","4|a4","12|d5","4|c5","4|a4","4|f4","4|e4","4|a4","12|c5","4|c5","4|b4","4|a#4","4|b4","4|b3","4|d#4","4|f#4","4|b4","4|d5","4|b5","4|a5","4|g#5","8|e6|b5|g#5|e5","4|g#5|e5","2|e6|b5|g#5|e5","2|r","4|e4","4|d#4","4|e4","4|f4","4|e4","12|e5|a4","4|e4","4|d#4","4|e4","4|f4","4|e4","12|e5|g#4","4|e4","4|d#4","4|e4","4|f4","4|e4","4|d5","4|b4","4|g#4","4|f4","4|d4","4|c#4","4|c4","8|a4|e4","4|a4|e4","4|c4","4|a4","4|g#4","4|g4","4|f4","4|a4","12|d5|f4","4|d5|a4","4|f4","4|d5|a4","4|r","4|c5|a4","4|e4","4|c5|a4","4|r","4|c5|a4","4|e4","4|c5|a4","4|r","4|e4","4|g#4","4|b4","4|e5","4|d5","4|c5","4|b4","8|a4","8|e5","4|a5|e5|c5|a4","4|a4","4|c#5","4|e5","4|a5","4|a4","4|c#5","8|g#5","4|a4","4|c#5","4|f#5","4|f#5","4|a4","4|c#5","8|e5","4|a4","4|c#5","4|f#5","4|f#5","4|a4","4|c#5","8|e5","4|a4","4|c#5","4|f#5","4|f#5","4|g#4","4|b4","8|e5","4|d5","4|e5","4|f#5","4|a5","4|d5","4|e5","8|g#5","4|d5","4|e5","4|f#5","4|f#5","4|b4","4|d5","8|e5","4|d5","4|e5","4|f#5","4|a5","4|d5","4|e5","8|g#5","4|d5","4|e5","4|f#5","4|f#5","4|a4","4|c#5","8|e5","4|a4","4|c#5","4|e5","4|a5","4|a4","4|c#5","8|g#5","4|a4","4|c#5","4|f#5","4|f#5","4|a4","4|c#5","8|e5","4|a4","4|c#5","4|e5","4|f#5","4|e5","4|c#5","4|a#4","4|f#5","4|e5","4|c#5","4|a4","4|b4","4|a4","4|b4","4|c#5","8|d5","8|r","4|d4","4|c#4","4|d4","4|e4","4|f#4","4|g#4","4|a4","4|b4","4|c#5","4|d5","4|d#5","4|e5","4|f#5","4|e5","4|d5","4|c#5","4|b4","4|a4","4|g#4","4|f#4","4|e4","4|d4","4|c#4","4|b3","8|a3","8|e4","4|a5|e5"
+    )
+    ch1 = @(
+        "4|r","4|r","4|r","12|a2","4|a2|a3","8|e2","8|c2","4|b2","8|b3|g#3","4|b3|g#3","8|b2","8|b3|g#3","4|e3","8|b3|g#3","4|b3|g#3","8|d3","8|b3|g#3","4|c3","8|a3|e3","4|a3|e3","8|c3","8|a3|e3","4|d3","8|a3|f3","4|a3|f3","8|d3","8|d#3","4|e3","8|b3|g#3","4|b3|g#3","8|e3","8|b3|g#3","12|b1","4|b2","8|b1","8|d#3|d#2","4|e3|e2","8|b2","4|b2","4|e3|e2","4|r","8|r","12|a2","4|c4|a3","8|e3","8|c3","4|b2","8|b3|g#3","4|b3|g#3","8|b2","8|b3|g#3","4|e3","8|b3|g#3","4|b3|g#3","8|e3","8|b3|g#3","4|c3","8|a3|e3","4|a3|e3","8|c3","8|a3|e3","12|f3","4|d4|a3","8|f3","8|f3|f2","12|e3|e2","4|c4|a3","8|e3","8|c3|c2","12|b2|b1","4|d4|b3|g#3","8|e3","8|g#3|g#2","8|a3|a2","8|c3","8|a3|a2","8|r","4|a3","8|e4|c#4","4|a3","8|e3","8|e4|c#4","4|a3","8|e4|c#4","4|a3","8|e3","8|e4|c#4","4|a3","8|e4|c#4","4|a3","8|e3","8|a#3|a#2","4|b3|b2","8|d4|e4","4|d4|e4","8|e3","8|d4|e4","4|g#3","8|e4|d4","4|e4|d4","8|e3","8|e4|d4","4|g#3","8|e4|d4","4|e4|d4","8|e3","8|e4|d4","4|g#3","8|e4|d4","4|e4|d4","8|e3","8|c4|c3","4|c#4|c#3","8|e4|c#4","4|e4|c#4","8|e3","8|e4|c#4","4|a3","8|e4","4|a3","8|e3","8|e4","4|a3","8|e4","4|e4","8|e3","8|e4","12|f#2","4|f#3","8|f#2","8|a#3|a#2","12|b3|b2","4|f#3","8|d3","8|r","12|d3|d2","4|e3|e2","8|d3|d2","8|d3|d2","12|e3|e2","4|c#4|a3","8|e3","8|c#4|a3","12|e3","4|b3|g#3","8|e3","8|e3|e2","8|a2|a1","8|e2","4|a2|a1"
+    )
+}
+
+
 
 function GameOver {
+    StopMusic
     # end the current game
     $GameData.EndTime = [datetime]::Now
     DrawGameText
@@ -1197,17 +1462,22 @@ param(
 
 function DoAGame {
 
-    ## begin DoAGame
+    # init game
     ResetGameData
     $GameData.StartTime = [datetime]::Now
     DrawGameBackground
-
     NewCurrentTetromino
     PlaceCurrentTetromino
-
     $last_tetrominofallms = $Stopwatch.ElapsedMilliseconds
     $cur_tetrominofalldelayms = GetDelaymsForCurrentLevel
 
+    # init music
+    $music_ch0 = ConvertNoteSequenceToFrequencySequence -NoteSequence $music_tico.ch0
+    $music_ch1 = ConvertNoteSequenceToFrequencySequence -NoteSequence $music_tico.ch1
+    $stream = Create2ChannelStream -Channel0 $music_ch0 -Channel1 $music_ch1
+    PlayMusic -Stream $stream -Loop
+
+    # begin loop
     [bool]$updatereq = $true
     do {
 
@@ -1483,10 +1753,12 @@ try {
 
 }
 catch {    
+    StopMusic
     $caught_thing = $_   
     throw $caught_thing 
 }
 finally {
+    StopMusic
     # reset console
     [console]::ForegroundColor = $SAVED_FORECOLOUR
     [console]::BackgroundColor = $SAVED_BACKCOLOUR
