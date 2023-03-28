@@ -2,7 +2,7 @@
 Tetris for PowerShell
 
 - A-Type game only
-- No music
+- With music (update $MUSIC_ENABLED to disable it)
 
 Download and then execute pstetris.ps1.
 
