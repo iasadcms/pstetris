@@ -10,4 +10,4 @@ Use arrow keys - left, right, down, up == rotate. Escape == quit
 
 Enjoy!
 
-![alt text](https://github.com/iasadcms/pstetris/blob/main/screenshot.jpg?raw=true)
+![alt text](https://github.com/iasadcms/pstetris/blob/main/screenshot_end.jpg?raw=true)
