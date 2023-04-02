@@ -61,25 +61,29 @@ Add-Type -TypeDefinition @"
     using System.IO;
     using System.Linq;
  
-    // Helper class to generate WAV files by generating sequences of combined sine waves.
-    // Faster than doing this in PowerShell.
+    /// <summary>
+    /// Helper methods for sound generation
+    /// </summary>
     public class SoundHelper {
 
         public const double TAU = 2 * Math.PI;
 
-        public const int SOUND_FORMATCHUCKSIZE = 16;
-        public const int SOUND_HEADERSIZE = 8;
-        public const int SOUND_WAVESIZE = 4;
-        public const int SOUND_SAMPLESPERSEC = 44100;
-        public const short SOUND_TRACKS = 1;
-        public const short SOUND_BITSPERSAMPLE = 16;
-        public const short SOUND_FORMATTYPE = 1;
-        public const short SOUND_FRAMESIZE = (short)(SOUND_TRACKS * ((SOUND_BITSPERSAMPLE + 7) / 8));
-        public const int SOUND_BYTEPERSECOND = SOUND_SAMPLESPERSEC * SOUND_FRAMESIZE;
+        public const int WAV_FORMATCHUCKSIZE = 16;
+        public const int WAV_HEADERSIZE = 8;
+        public const int WAV_WAVESIZE = 4;
+        public const int WAV_SAMPLESPERSEC = 44100;
+        public const short WAV_TRACKS = 1;
+        public const short WAV_BITSPERSAMPLE = 16;
+        public const short WAV_FORMATTYPE = 1;
+        public const short WAV_FRAMESIZE = (short)(WAV_TRACKS * ((WAV_BITSPERSAMPLE + 7) / 8));
+        public const int WAV_BYTEPERSECOND = WAV_SAMPLESPERSEC * WAV_FRAMESIZE;
 
+        /// <summary>
+        /// A Note represents one or more notes played at the same time, akin to a single note or chord played.
+        /// </summary>
         public struct Note {
-            public int DurationMs;                     // ms to play note for
-            public short[] Frequencies;                // list of frequencies to play 
+            public int DurationMs;                      // ms to play note for
+            public short[] Freqs;                        // list of frequencies to play
         }
 
         public static MemoryStream CreateWavStream(Note[] ch1, Note[] ch2, int volume = 16383) {
@@ -93,13 +97,13 @@ Add-Type -TypeDefinition @"
 
             int count = Math.Max(ch1.Length, ch2.Length);
             if (count <= 0)
-               return null;
+                return null;
 
             // calc size values
             int sumdurationms = Math.Max(ch1.Sum(x => x.DurationMs), ch2.Sum(x => x.DurationMs));
-            int samples = (int)((decimal)SOUND_SAMPLESPERSEC * sumdurationms / 1000);
-            int dataChunkSize = samples * SOUND_FRAMESIZE;
-            int fileSize = SOUND_WAVESIZE + SOUND_HEADERSIZE + SOUND_FORMATCHUCKSIZE + SOUND_HEADERSIZE + dataChunkSize;
+            int samples = (int)((decimal)WAV_SAMPLESPERSEC * sumdurationms / 1000);
+            int dataChunkSize = samples * WAV_FRAMESIZE;
+            int fileSize = WAV_WAVESIZE + WAV_HEADERSIZE + WAV_FORMATCHUCKSIZE + WAV_HEADERSIZE + dataChunkSize;
 
             // create streams
             var mStrm = new MemoryStream();
@@ -110,13 +114,13 @@ Add-Type -TypeDefinition @"
             writer.Write(fileSize);
             writer.Write(0x45564157);
             writer.Write(0x20746D66);
-            writer.Write(SOUND_FORMATCHUCKSIZE);
-            writer.Write(SOUND_FORMATTYPE);
-            writer.Write(SOUND_TRACKS);
-            writer.Write(SOUND_SAMPLESPERSEC);
-            writer.Write(SOUND_BYTEPERSECOND);
-            writer.Write(SOUND_FRAMESIZE);
-            writer.Write(SOUND_BITSPERSAMPLE);
+            writer.Write(WAV_FORMATCHUCKSIZE);
+            writer.Write(WAV_FORMATTYPE);
+            writer.Write(WAV_TRACKS);
+            writer.Write(WAV_SAMPLESPERSEC);
+            writer.Write(WAV_BYTEPERSECOND);
+            writer.Write(WAV_FRAMESIZE);
+            writer.Write(WAV_BITSPERSAMPLE);
             writer.Write(0x61746164);
             writer.Write(dataChunkSize);
 
@@ -137,12 +141,12 @@ Add-Type -TypeDefinition @"
                 // get freqs to combine from each channel
                 freqsToCombine.Clear();
                 if (ch1_idx < ch1.Length) {
-                    foreach (short freq in ch1[ch1_idx].Frequencies) {
+                    foreach (short freq in ch1[ch1_idx].Freqs) {
                         freqsToCombine.Add(freq);
                     }
                 }
                 if (ch2_idx < ch2.Length) {
-                    foreach (short freq in ch2[ch2_idx].Frequencies) {
+                    foreach (short freq in ch2[ch2_idx].Freqs) {
                         freqsToCombine.Add(freq);
                     }
                 }
@@ -152,23 +156,23 @@ Add-Type -TypeDefinition @"
 
                 // generate sound for thisduration - combine freqs and write to WavStream
                 {
-                        int numfreqs = freqsToCombine.Count;
-                        double[] thetas = new double[numfreqs];
-                        double[] samplevals = new double[numfreqs];
+                    int numfreqs = freqsToCombine.Count;
+                    double[] thetas = new double[numfreqs];
+                    double[] samplevals = new double[numfreqs];
+                    for (int f = 0; f < numfreqs; f++) {
+                        thetas[f] = freqsToCombine[f] * TAU / (double)WAV_SAMPLESPERSEC;
+                    }
+                    int numsamplesthis = (int)((decimal)WAV_SAMPLESPERSEC * thisdurationms / 1000);
+                    double amp = volume >> 2; // so we simply set amp = volume / 2
+                    for (int step = 0; step < numsamplesthis; step++) {
+                        int samplevalsum = 0;
                         for (int f = 0; f < numfreqs; f++) {
-                            thetas[f] = freqsToCombine[f] * TAU / (double)SOUND_SAMPLESPERSEC;
+                            samplevals[f] = amp * Math.Sin(thetas[f] * (double)step);
+                            samplevalsum += (short)samplevals[f];
                         }
-                        int numsamplesthis = (int)((decimal)SOUND_SAMPLESPERSEC * thisdurationms / 1000);
-                        double amp = volume >> 2; // so we simply set amp = volume / 2
-                        for (int step = 0; step < numsamplesthis; step++) {
-                            int samplevalsum = 0;
-                            for (int f = 0; f < numfreqs; f++) {
-                                samplevals[f] = amp * Math.Sin(thetas[f] * (double)step);
-                                samplevalsum += (short)samplevals[f];
-                            }
-                            short s = (short)samplevalsum;
-                            writer.Write(s);
-                        }
+                        short s = (short)samplevalsum;
+                        writer.Write(s);
+                    }
                 }
 
                 // ? should we update any indices
@@ -185,7 +189,7 @@ Add-Type -TypeDefinition @"
             }
 
             // go to beginning of WavStream and return
-            mStrm.Seek(0, SeekOrigin.Begin);      
+            mStrm.Seek(0, SeekOrigin.Begin);
             return mStrm;
         }
     }
