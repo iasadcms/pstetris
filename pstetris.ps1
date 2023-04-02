@@ -6,14 +6,19 @@
     Use arrow keys - left, right, down, up == rotate.
     Escape == quit
     With music
+
+    $MUSIC_ENABLED = $true|$fakse
 #>
 
 
+# display area dimensions
 $CONBUFF_WIDTH = 36
 $CONBUFF_HEIGHT = 27
 
+# set to $true|$false to enable|disable music
 $MUSIC_ENABLED = $true
 
+# colours used for most things
 $FORECOLOUR_BACKGROUND = 'Cyan';        $BACKCOLOUR_BACKGROUND = 'DarkGray'
 $FORECOLOUR_TITLE = 'White';            $BACKCOLOUR_TITLE = 'Black'
 $FORECOLOUR_TITLESHADOW = 'DarkGray';   $BACKCOLOUR_TITLESHADOW = 'Black'
@@ -23,8 +28,10 @@ $FORECOLOUR_MENU = 'White';             $BACKCOLOUR_MENU = 'Black'
 $FORECOLOUR_GAMETEXT = 'White';         $BACKCOLOUR_GAMETEXT = 'Black'
 $BACKCOLOUR_GAMEAREA = 'Black'
 
+# variable name says it all.
+$MAINMENU_TOPSCORE_BLINKMS = 1000 
 
-$MAINMENU_TOPSCORE_BLINKMS = 1000           # how fast top score blinks on the main menu
+
 
 
 #######################################################################################################
@@ -43,9 +50,10 @@ $Stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 
 [int]$SOUND_DEFAULTVOLUME = 16383
 
-$SOUND_NUM = 45
+$SOUND_MULTIPLIER = 45
 
-
+if ("SoundHelper" -as [type]) { } 
+else {
 Add-Type -TypeDefinition @"
     using System.Runtime.InteropServices;
     using System;
@@ -74,7 +82,7 @@ Add-Type -TypeDefinition @"
             public short[] Frequencies;                // list of frequencies to play 
         }
 
-        public static MemoryStream Create2ChannelStream(Note[] ch1, Note[] ch2, int volume = 16383) {
+        public static MemoryStream CreateWavStream(Note[] ch1, Note[] ch2, int volume = 16383) {
             /*
             * count is the number of items in the freqs and ms arrays.
             * ch1freqs and ch2freqs contains the frequencies for ch1 and ch2.
@@ -122,7 +130,7 @@ Add-Type -TypeDefinition @"
             while ((ch1_idx < ch1.Length) || (ch2_idx < ch2.Length)) {      // yes, or
 
                 // calc how long we should play the current selection of notes...
-                // until the next duration change by either channel.
+                // until the next durationms change by either channel.
                 int diff = Math.Abs(durationms1 - durationms2);
                 int thisdurationms = Math.Max(durationms1, durationms2) - diff;
 
@@ -138,11 +146,11 @@ Add-Type -TypeDefinition @"
                         freqsToCombine.Add(freq);
                     }
                 }
-                if (freqsToCombine.Count == 0) {            // if not freqs for this duration, use silence
+                if (freqsToCombine.Count == 0) {            // if not freqs for this durationms, use silence
                     freqsToCombine.Add(0);
                 }
 
-                // generate sound for thisduration - combine freqs and write to stream
+                // generate sound for thisduration - combine freqs and write to WavStream
                 {
                         int numfreqs = freqsToCombine.Count;
                         double[] thetas = new double[numfreqs];
@@ -176,13 +184,13 @@ Add-Type -TypeDefinition @"
                 }
             }
 
-            // go to beginning of stream and return
+            // go to beginning of WavStream and return
             mStrm.Seek(0, SeekOrigin.Begin);      
             return mStrm;
         }
     }
 "@
-
+}
 
 $global:Volume = $SOUND_DEFAULTVOLUME
 
@@ -209,8 +217,8 @@ param(
     $_regex = [regex]::match($Note, "^([a-zA-Z]+#?|b?)(\d+)$")
     $_note = $_regex.groups[1].Value
     $_octave = $_regex.groups[2].Value
-    $frequency = $NotesToFreq[$_note] * [Math]::Pow(2, $_octave)
-    return $frequency
+    $_frequency = $NotesToFreq[$_note] * [Math]::Pow(2, $_octave)
+    return $_frequency
 }
 
 
@@ -227,8 +235,8 @@ param(
     $data = New-Object Collections.Generic.List[SoundHelper+Note]
 
     # get frequency data for the music
-    # freq data is a structure of duration, + and array of frequencies of which to play
-    $durationsum = 0
+    # freq data is a structure of durationms, + and array of frequencies of which to play
+    $sum_durationms = 0
     foreach ($notegroup in $NoteSequence) {
         # split by |                                        - i.e. "8|e4|e2" becomes 8, e4, and e2
         $_split = @($notegroup -split '\|')
@@ -236,8 +244,8 @@ param(
             continue
         }
         # extract note data from $_split    
-        $duration = [int]($_split[0]) * $SOUND_NUM
-        $durationsum += $duration
+        $durationms = [int]($_split[0]) * $SOUND_MULTIPLIER
+        $sum_durationms += $durationms
         $num_notes = $_split.Count - 1
         $freqs = [int16[]]::new($num_notes)
         # add freq data for each note
@@ -245,7 +253,7 @@ param(
             $freqs[$idx] = if (($idx + 1) -lt $_split.Count) { ConvertNoteToFrequency -Note $_split[($idx + 1)] } else { 0 }
         }
         $note = New-Object SoundHelper+Note
-        $note.DurationMs = $duration
+        $note.DurationMs = $durationms
         $note.Frequencies = $freqs
         $data.Add($note)      
     }      
@@ -253,26 +261,27 @@ param(
 }
 
 
-function Create2ChannelStream {
-<# creates an audio stream from 2 frequency sequences#>
+function CreateWavStream {
+<# creates an wav audio WavStream from 2 frequency sequences #>
 param(
-    $Channel0,
-    $Channel1
+    $FreqSeq0,
+    $FreqSeq1
 )
-    $stream = [SoundHelper]::Create2ChannelStream($Channel0, $Channel1)
-    return $stream
+    $WavStream = [SoundHelper]::CreateWavStream($FreqSeq0, $FreqSeq1, $global:Volume)
+    return $WavStream
 }
 
 
 function PlayMusic {
+<# starts the music play by loading thw wav WavStream and hitting play#>
 param(
-    [System.IO.MemoryStream]$Stream,
+    [System.IO.MemoryStream]$WavStream,
     [switch]$Loop
 )
     if ($false -eq $MUSIC_ENABLED) {
         return
     }
-    $global:MusicPlayer = New-Object System.Media.SoundPlayer($Stream)
+    $global:MusicPlayer = New-Object System.Media.SoundPlayer($WavStream)
     if ($Loop.IsPresent) {
         $global:MusicPlayer.PlayLooping()
     }
@@ -283,6 +292,7 @@ param(
 
 
 function StopMusic {
+<# stops the music play from playing music #>
     if ($null -ne $global:MusicPlayer) {
         $global:MusicPlayer.Stop()
         $global:MusicPlayer = $null
@@ -300,7 +310,7 @@ function StopMusic {
 $SAVED_FORECOLOUR = [console]::ForegroundColor
 $SAVED_BACKCOLOUR = [console]::BackgroundColor 
 
-
+# var chars used through the game
 $CHAR_SOLIDBLOCK = [char]9608
 $CHAR_FADE1 = [char]9619
 $CHAR_FADE2 = [char]9618
@@ -346,27 +356,22 @@ Add-Type -TypeDefinition @"
 "@
 }
 
-if ("TrustAllCertsPolicy" -as [type]) {} else {
-    Add-Type "using System.Net;using System.Security.Cryptography.X509Certificates;public class TrustAllCertsPolicy : ICertificatePolicy {public bool CheckValidationResult(ServicePoint srvPoint, X509Certificate certificate, WebRequest request, int certificateProblem) {return true;}}"
-    [System.Net.ServicePointManager]::CertificatePolicy = New-Object TrustAllCertsPolicy
-}
-
 $global:hStdOut = [win32]::GetStdHandle(-11)
 $global:CursorInfo = New-Object Win32+CONSOLE_CURSOR_INFO
 
 
 function GetCursorVisible {
+<# returns $true|$false if thte console cursor is visible or not #>
     if ([win32]::GetConsoleCursorInfo($hStdOut, [ref]$global:CursorInfo)) {
         return [bool]($global:CursorInfo.bVisible)
     }
     else { return $true }
 }
-
-
-$SAVED_CURSORVISIBLE = GetCursorVisible
+$SAVED_CURSORVISIBLE = GetCursorVisible         # we'll restore this later
 
 
 function SetCursorVisible {
+<# sets the console cursor visibility #>
 param(
     [bool]$Visible = $true
 )
@@ -375,6 +380,7 @@ param(
         [win32]::SetConsoleCursorInfo($hStdOut, [ref]$global:CursorInfo) | Out-Null
     }
 }
+
 
 
 
@@ -387,12 +393,12 @@ $CONBUFF_SIZE = ($CONBUFF_WIDTH * $CONBUFF_HEIGHT)                      # size o
 
 function NewConBuffObject {
 <# creates a new object to store console buffer info #>
-    $Result = [pscustomobject]@{
+    $result = [pscustomobject]@{
         Buffer = (New-Object int[]($CONBUFF_SIZE))                       # the current buffer we'll print
         ForeColours = (New-Object int[]($CONBUFF_SIZE))                  # forground colours
         BackColours = (New-Object int[]($CONBUFF_SIZE))                  # background colours
     }
-    return $Result
+    return $result
 }
 
 
@@ -403,7 +409,9 @@ $LastConBuff = NewConBuffObject                                         # the la
 
 function ResetLastConBuff {
 <# sets LastConBuff to values that likely force a print during the next call to PrintConBuff #>
-    for ($idx = 0; $idx -lt $LastConBuff.Buffer.Length; $idx++) { $LastConBuff.Buffer[$idx] = 365 }
+    for ($idx = 0; $idx -lt $LastConBuff.Buffer.Length; $idx++) { 
+        $LastConBuff.Buffer[$idx] = 365 
+    }
 }
 
 
@@ -436,12 +444,18 @@ param(
     [ConsoleColor]$ForeColour,
     [ConsoleColor]$BackColour
 )    
-    if (($y -lt 0) -or ($y -ge $CONBUFF_HEIGHT)) { return }
+    if (($y -lt 0) -or ($y -ge $CONBUFF_HEIGHT)) { 
+        return 
+    }
     $ypos = $y * $CONBUFF_WIDTH
     for ($dx = 0; $dx -lt $Text.Length; $dx++) {
         $idx = $ypos + $x + $dx
-        if ($idx -lt 0) { continue }
-        if ($idx -ge $CONBUFF_SIZE) { break }
+        if ($idx -lt 0) { 
+            continue 
+        }
+        if ($idx -ge $CONBUFF_SIZE) { 
+            break 
+        }
         $ConBuff.Buffer[$idx] = $Text[$dx]
         $ConBuff.ForeColours[$idx] = $ForeColour
         $ConBuff.BackColours[$idx] = $BackColour
@@ -737,7 +751,7 @@ function NewGameDataObject {
 
 # store data for each game here
 $AllGameData = @{}
-[enum]::GetValues([GameType]) | % {
+[enum]::GetValues([GameType]) | ForEach-Object {
     $rec = NewGameDataObject
     $rec.GameType = $_
     $rec.Name = $_.ToString()
@@ -746,11 +760,12 @@ $AllGameData = @{}
 $AllGameData[[GameType]::AGame].Name = "A-Type"
 
 # current game data stored here
-#$GameData = $AllGameData[[GameType]::AGame]
+$GameData = $AllGameData[[GameType]::AGame]
+
 
 function ResetGameData {
 <# resets game data #>
-    $global:GameData = $global:AllGameData[[GameType]::AGame]
+    $GameData = $global:AllGameData[[GameType]::AGame]
     $GameData.Score = 0
     $GameData.Level = 1
     $GameData.Lines = 0
@@ -766,8 +781,6 @@ function ResetGameData {
     $GameData.StartTime = [datetime]::MinValue
     $GameData.EndTime = [datetime]::MinValue
 }
-
-
 
 
 # number of points for each line cleared, per level
@@ -799,6 +812,7 @@ param (
 
 # speed of fall in ms per level. Anything above max index will use the last value.
 $DelaymsPerLevel = @(1000, 800, 757, 714, 671, 628, 585, 542, 499, 456, 420, 399, 378, 357, 336, 315, 294, 273, 252, 231)
+
 
 function GetDelaymsForCurrentLevel {   
 <# returns the current ms delay for tetrino falls used in the main game loop #>
@@ -857,10 +871,7 @@ $TetrominoForeColours = @{
     [TetrominoType]::Z = [ConsoleColor]::DarkRed
 } 
 
-
-#$borderChars = "─", "│", "┌", "┐","└","┘","├","┤","┬","┴","┼"
-#$borderChars = [char]0x2500, [char]0x2502, [char]0x250C, [char]0x2510, [char]0x2514, [char]0x2518, [char]0x251C, [char]0x2524, [char]0x252C, [char]0x2534, [char]0x253C
-
+# chars for tetromino fills
 $CHAR_NESW = [char]0x253C
 $CHAR_NSW = [char]0x2524
 $CHAR_NES = [char]0x251C
@@ -875,7 +886,7 @@ $CHAR_WN = [char]0x2518
 
 
 function GetTetrominoPrintShape {
-<# returns the tetromino an array of chars to print #>
+<# a copy of the tetromino shape is returned, but with the insides 'filled' with lines #>
 param(
     [array]$Shape
 )
@@ -971,13 +982,6 @@ function DrawGameBackground {
 }
 
 
-function DrawGameNextTetromino {
-    ConBuffDrawFramedBox -Char $CHAR_EMPTY -x $GAMEAREA_COL3 -y 11 -Width 6 -Height 7 -FrameForeColour $FORECOLOUR_BORDER -FrameBackColour $BACKCOLOUR_BORDER -BoxForeColour $FORECOLOUR_SCORE -BoxBackColour $BACKCOLOUR_SCORE
-    ConBuffWrite -Text "NEXT" -x ($GAMEAREA_COL3 + 1) -y 12 -ForeColour $FORECOLOUR_GAMETEXT -BackColour $BACKCOLOUR_GAMETEXT
-    ConBuffDrawTetromino -Type $GameData.NextTetrominoType -x ($GAMEAREA_COL3 + 1)  -y 13 #-BackColour $BACKCOLOUR_GAMETEXT
-}
-
-
 function DrawGameText {
 <# draws game text data in conbuff #>
     # display game type 
@@ -1003,7 +1007,9 @@ function DrawGameText {
     [string]$ScoreStr = ConvertScoreToString -Value $GameData.Score -NumDigits 6
     ConBuffWrite -Text $ScoreStr -x ($GAMEAREA_COL3 + 1) -y 8 -ForeColour $FORECOLOUR_SCORE -BackColour $BACKCOLOUR_SCORE
     # display next
-    DrawGameNextTetromino
+    ConBuffDrawFramedBox -Char $CHAR_EMPTY -x $GAMEAREA_COL3 -y 11 -Width 6 -Height 7 -FrameForeColour $FORECOLOUR_BORDER -FrameBackColour $BACKCOLOUR_BORDER -BoxForeColour $FORECOLOUR_SCORE -BoxBackColour $BACKCOLOUR_SCORE
+    ConBuffWrite -Text "NEXT" -x ($GAMEAREA_COL3 + 1) -y 12 -ForeColour $FORECOLOUR_GAMETEXT -BackColour $BACKCOLOUR_GAMETEXT
+    ConBuffDrawTetromino -Type $GameData.NextTetrominoType -x ($GAMEAREA_COL3 + 1)  -y 13 #-BackColour $BACKCOLOUR_GAMETEXT
     # display level
     ConBuffWrite -Text "LEVEL" -x ($GAMEAREA_COL3 + 1) -y 19 -ForeColour $FORECOLOUR_SCORE -BackColour $BACKCOLOUR_SCORE
     [string]$LevelStr = ConvertScoreToString -Value $GameData.Level -NumDigits 3
@@ -1062,71 +1068,83 @@ function GetFullBoardRows {
 
 
 function NewMenuObject {
-    <# creates an object for us to store menu data #>
-    param(
-        [string[]]$Items    
-    )
-        $Result = [pscustomobject]@{
-            Items = $Items
-            Index = 0        
+<# creates an object for us to store menu data #>
+param(
+    [string[]]$Items    
+)
+    $result = [pscustomobject]@{
+        Items = $Items
+        Index = 0        
+    }
+    return $result
+}
+
+
+function GetNextMenuIndex {
+<# returns the next non empty menu item index #>
+param(
+    $MenuObject
+)
+    if ($MenuObject.Items.Count -le 0) { 
+        return -1 
+    }
+    if ($MenuObject.Items.Count -eq 1) { 
+        return 0 
+    }
+    $index = $MenuObject.Index
+    do {
+        $index++
+        if ($index -ge $MenuObject.items.Count) { 
+            $index = 0 
         }
-        return $Result
+    } while ([string]::IsNullOrWhiteSpace($MenuObject.Items[$index]))
+    return $index
+}
+
+
+function GetLastMenuIndex {
+<# returns the last non empty menu item index #>
+param(
+    $MenuObject
+)
+    if ($MenuObject.Items.Count -le 0) { 
+        return -1 
     }
-    
-    
-    function GetNextMenuIndex {
-    <# returns the next non empty menu item index #>
-    param(
-        $MenuObject
-    )
-        if ($MenuObject.Items.Count -le 0) { return -1 }
-        if ($MenuObject.Items.Count -eq 1) { return 0 }
-        $index = $MenuObject.Index
-        do {
-            $index++
-            if ($index -ge $MenuObject.items.Count) { $index = 0 }
-        } while ([string]::IsNullOrWhiteSpace($MenuObject.Items[$index]))
-        return $index
+    if ($MenuObject.Items.Count -eq 1) { 
+        return 0 
     }
-    
-    
-    function GetLastMenuIndex {
-    <# returns the last non empty menu item index #>
-    param(
-        $MenuObject
-    )
-        if ($MenuObject.Items.Count -le 0) { return -1 }
-        if ($MenuObject.Items.Count -eq 1) { return 0 }
-        $index = $MenuObject.Index
-        do {
-            $index--
-            if ($index -lt 0) { $index = $MenuObject.Items.Count - 1 }
-        } while ([string]::IsNullOrWhiteSpace($MenuObject.Items[$index]))
-        return $index
-    }
-    
-    
-    function ConBuffDrawMenu {
-    <# draws a menu in to conbuff #>
-    param(
-        $Menu,
-        [int]$x,
-        [int]$y,
-        [int]$Width,
-        [switch]$DrawSelected,
-        [switch]$CenterAligned
-    )
-        $wd2 = $Width / 2    
-        for ($menuy = 0; $menuy -lt $Menu.Items.Count; $menuy++) {
-            $xpos = if ($true -eq $CenterAligned.IsPresent) { $x + $wd2 - ($Menu.Items[$menuy].Length / 2) } else { $x }
-            ConBuffWrite -Text $Menu.Items[$menuy] -x $xpos -y ($y + $menuy) -ForeColour $FORECOLOUR_MENU -BackColour $BACKCOLOUR_MENU
+    $idx = $MenuObject.idx
+    do {
+        $index--
+        if ($idx -lt 0) { 
+            $idx = $MenuObject.Items.Count - 1 
         }
-        if ($true -eq $DrawSelected.IsPresent) {
-            ConBuffWrite -Text $CHAR_ARROWRIGHT -x $x -y ($y + $Menu.Index) -ForeColour $FORECOLOUR_MENU -BackColour $BACKCOLOUR_MENU 
-            ConBuffWrite -Text $CHAR_ARROWLEFT -x ($x + $Width - 1) -y ($y + $Menu.Index) -ForeColour $FORECOLOUR_MENU -BackColour $BACKCOLOUR_MENU 
-        }
+    } while ([string]::IsNullOrWhiteSpace($MenuObject.Items[$idx]))
+    return $idx
+}
+
+
+function ConBuffDrawMenu {
+<# draws a menu in to conbuff #>
+param(
+    $Menu,
+    [int]$x,
+    [int]$y,
+    [int]$Width,
+    [switch]$DrawSelected,
+    [switch]$CenterAligned
+)
+    $wd2 = $Width / 2    
+    for ($menuy = 0; $menuy -lt $Menu.Items.Count; $menuy++) {
+        $xpos = if ($true -eq $CenterAligned.IsPresent) { $x + $wd2 - ($Menu.Items[$menuy].Length / 2) } else { $x }
+        ConBuffWrite -Text $Menu.Items[$menuy] -x $xpos -y ($y + $menuy) -ForeColour $FORECOLOUR_MENU -BackColour $BACKCOLOUR_MENU
     }
-    
+    if ($true -eq $DrawSelected.IsPresent) {
+        ConBuffWrite -Text $CHAR_ARROWRIGHT -x $x -y ($y + $Menu.Index) -ForeColour $FORECOLOUR_MENU -BackColour $BACKCOLOUR_MENU 
+        ConBuffWrite -Text $CHAR_ARROWLEFT -x ($x + $Width - 1) -y ($y + $Menu.Index) -ForeColour $FORECOLOUR_MENU -BackColour $BACKCOLOUR_MENU 
+    }
+}
+
 
 
 #######################################################################################################
@@ -1386,14 +1404,10 @@ function RotateTetrominoClockwise {
 
 # game music
 $music_tico = @{
-    ch0 = @(
-        "4|e4","4|d#4","4|e4","4|f4","4|e4","12|e5|a4","4|e4","4|d#4","4|e4","4|f4","4|e4","12|e5|g#4","4|e4","4|d#4","4|e4","4|f4","4|e4","4|d5","4|b4","4|g#4","4|f4","4|d4","4|c#4","4|c4","8|a4|e4","4|a4|e4","4|c4","4|a4","4|g#4","4|g4","4|f4","4|a4","12|d5","4|c5","4|a4","4|f4","4|e4","4|a4","12|c5","4|c5","4|b4","4|a#4","4|b4","4|b3","4|d#4","4|f#4","4|b4","4|d5","4|b5","4|a5","4|g#5","8|e6|b5|g#5|e5","4|g#5|e5","2|e6|b5|g#5|e5","2|r","4|e4","4|d#4","4|e4","4|f4","4|e4","12|e5|a4","4|e4","4|d#4","4|e4","4|f4","4|e4","12|e5|g#4","4|e4","4|d#4","4|e4","4|f4","4|e4","4|d5","4|b4","4|g#4","4|f4","4|d4","4|c#4","4|c4","8|a4|e4","4|a4|e4","4|c4","4|a4","4|g#4","4|g4","4|f4","4|a4","12|d5|f4","4|d5|a4","4|f4","4|d5|a4","4|r","4|c5|a4","4|e4","4|c5|a4","4|r","4|c5|a4","4|e4","4|c5|a4","4|r","4|e4","4|g#4","4|b4","4|e5","4|d5","4|c5","4|b4","8|a4","8|e5","4|a5|e5|c5|a4","4|a4","4|c#5","4|e5","4|a5","4|a4","4|c#5","8|g#5","4|a4","4|c#5","4|f#5","4|f#5","4|a4","4|c#5","8|e5","4|a4","4|c#5","4|f#5","4|f#5","4|a4","4|c#5","8|e5","4|a4","4|c#5","4|f#5","4|f#5","4|g#4","4|b4","8|e5","4|d5","4|e5","4|f#5","4|a5","4|d5","4|e5","8|g#5","4|d5","4|e5","4|f#5","4|f#5","4|b4","4|d5","8|e5","4|d5","4|e5","4|f#5","4|a5","4|d5","4|e5","8|g#5","4|d5","4|e5","4|f#5","4|f#5","4|a4","4|c#5","8|e5","4|a4","4|c#5","4|e5","4|a5","4|a4","4|c#5","8|g#5","4|a4","4|c#5","4|f#5","4|f#5","4|a4","4|c#5","8|e5","4|a4","4|c#5","4|e5","4|f#5","4|e5","4|c#5","4|a#4","4|f#5","4|e5","4|c#5","4|a4","4|b4","4|a4","4|b4","4|c#5","8|d5","8|r","4|d4","4|c#4","4|d4","4|e4","4|f#4","4|g#4","4|a4","4|b4","4|c#5","4|d5","4|d#5","4|e5","4|f#5","4|e5","4|d5","4|c#5","4|b4","4|a4","4|g#4","4|f#4","4|e4","4|d4","4|c#4","4|b3","8|a3","8|e4","4|a5|e5"
-    )
-    ch1 = @(
-        "4|r","4|r","4|r","12|a2","4|a2|a3","8|e2","8|c2","4|b2","8|b3|g#3","4|b3|g#3","8|b2","8|b3|g#3","4|e3","8|b3|g#3","4|b3|g#3","8|d3","8|b3|g#3","4|c3","8|a3|e3","4|a3|e3","8|c3","8|a3|e3","4|d3","8|a3|f3","4|a3|f3","8|d3","8|d#3","4|e3","8|b3|g#3","4|b3|g#3","8|e3","8|b3|g#3","12|b1","4|b2","8|b1","8|d#3|d#2","4|e3|e2","8|b2","4|b2","4|e3|e2","4|r","8|r","12|a2","4|c4|a3","8|e3","8|c3","4|b2","8|b3|g#3","4|b3|g#3","8|b2","8|b3|g#3","4|e3","8|b3|g#3","4|b3|g#3","8|e3","8|b3|g#3","4|c3","8|a3|e3","4|a3|e3","8|c3","8|a3|e3","12|f3","4|d4|a3","8|f3","8|f3|f2","12|e3|e2","4|c4|a3","8|e3","8|c3|c2","12|b2|b1","4|d4|b3|g#3","8|e3","8|g#3|g#2","8|a3|a2","8|c3","8|a3|a2","8|r","4|a3","8|e4|c#4","4|a3","8|e3","8|e4|c#4","4|a3","8|e4|c#4","4|a3","8|e3","8|e4|c#4","4|a3","8|e4|c#4","4|a3","8|e3","8|a#3|a#2","4|b3|b2","8|d4|e4","4|d4|e4","8|e3","8|d4|e4","4|g#3","8|e4|d4","4|e4|d4","8|e3","8|e4|d4","4|g#3","8|e4|d4","4|e4|d4","8|e3","8|e4|d4","4|g#3","8|e4|d4","4|e4|d4","8|e3","8|c4|c3","4|c#4|c#3","8|e4|c#4","4|e4|c#4","8|e3","8|e4|c#4","4|a3","8|e4","4|a3","8|e3","8|e4","4|a3","8|e4","4|e4","8|e3","8|e4","12|f#2","4|f#3","8|f#2","8|a#3|a#2","12|b3|b2","4|f#3","8|d3","8|r","12|d3|d2","4|e3|e2","8|d3|d2","8|d3|d2","12|e3|e2","4|c#4|a3","8|e3","8|c#4|a3","12|e3","4|b3|g#3","8|e3","8|e3|e2","8|a2|a1","8|e2","4|a2|a1"
-    )
+    intro = @("4|e6|e5|e4|e3","8|d6|d5|d4|d3","4|c6|c5|c4|c3","8|b5|b4|b3|b2","8|a5|a4|a3|a2","8|g#5|g#4","8|b5|b4","8|c6|c5","8|d6|d5","8|e6|e5","8|r","8|e6|b5|g#5|e5","8|r","16|e2|e1","16|r")
+    ch0 = @("4|e4","4|d#4","4|e4","4|f4","4|e4","12|e5|a4","4|e4","4|d#4","4|e4","4|f4","4|e4","12|e5|g#4","4|e4","4|d#4","4|e4","4|f4","4|e4","4|d5","4|b4","4|g#4","4|f4","4|d4","4|c#4","4|c4","8|a4|e4","4|a4|e4","4|c4","4|a4","4|g#4","4|g4","4|f4","4|a4","12|d5","4|c5","4|a4","4|f4","4|e4","4|a4","12|c5","4|c5","4|b4","4|a#4","4|b4","4|b3","4|d#4","4|f#4","4|b4","4|d5","4|b5","4|a5","4|g#5","8|e6|b5|g#5|e5","4|g#5|e5","2|e6|b5|g#5|e5","2|r","4|e4","4|d#4","4|e4","4|f4","4|e4","12|e5|a4","4|e4","4|d#4","4|e4","4|f4","4|e4","12|e5|g#4","4|e4","4|d#4","4|e4","4|f4","4|e4","4|d5","4|b4","4|g#4","4|f4","4|d4","4|c#4","4|c4","8|a4|e4","4|a4|e4","4|c4","4|a4","4|g#4","4|g4","4|f4","4|a4","12|d5|f4","4|d5|a4","4|f4","4|d5|a4","4|r","4|c5|a4","4|e4","4|c5|a4","4|r","4|c5|a4","4|e4","4|c5|a4","4|r","4|e4","4|g#4","4|b4","4|e5","4|d5","4|c5","4|b4","8|a4","8|e5","4|a5|e5|c5|a4","4|a4","4|c#5","4|e5","4|a5","4|a4","4|c#5","8|g#5","4|a4","4|c#5","4|f#5","4|f#5","4|a4","4|c#5","8|e5","4|a4","4|c#5","4|f#5","4|f#5","4|a4","4|c#5","8|e5","4|a4","4|c#5","4|f#5","4|f#5","4|g#4","4|b4","8|e5","4|d5","4|e5","4|f#5","4|a5","4|d5","4|e5","8|g#5","4|d5","4|e5","4|f#5","4|f#5","4|b4","4|d5","8|e5","4|d5","4|e5","4|f#5","4|a5","4|d5","4|e5","8|g#5","4|d5","4|e5","4|f#5","4|f#5","4|a4","4|c#5","8|e5","4|a4","4|c#5","4|e5","4|a5","4|a4","4|c#5","8|g#5","4|a4","4|c#5","4|f#5","4|f#5","4|a4","4|c#5","8|e5","4|a4","4|c#5","4|e5","4|f#5","4|e5","4|c#5","4|a#4","4|f#5","4|e5","4|c#5","4|a4","4|b4","4|a4","4|b4","4|c#5","8|d5","8|r","4|d4","4|c#4","4|d4","4|e4","4|f#4","4|g#4","4|a4","4|b4","4|c#5","4|d5","4|d#5","4|e5","4|f#5","4|e5","4|d5","4|c#5","4|b4","4|a4","4|g#4","4|f#4","4|e4","4|d4","4|c#4","4|b3","8|a3","8|e4","4|a5|e5")
+    ch1 = @("4|r","4|r","4|r","12|a2","4|a2|a3","8|e2","8|c2","4|b2","8|b3|g#3","4|b3|g#3","8|b2","8|b3|g#3","4|e3","8|b3|g#3","4|b3|g#3","8|d3","8|b3|g#3","4|c3","8|a3|e3","4|a3|e3","8|c3","8|a3|e3","4|d3","8|a3|f3","4|a3|f3","8|d3","8|d#3","4|e3","8|b3|g#3","4|b3|g#3","8|e3","8|b3|g#3","12|b1","4|b2","8|b1","8|d#3|d#2","4|e3|e2","8|b2","4|b2","4|e3|e2","4|r","8|r","12|a2","4|c4|a3","8|e3","8|c3","4|b2","8|b3|g#3","4|b3|g#3","8|b2","8|b3|g#3","4|e3","8|b3|g#3","4|b3|g#3","8|e3","8|b3|g#3","4|c3","8|a3|e3","4|a3|e3","8|c3","8|a3|e3","12|f3","4|d4|a3","8|f3","8|f3|f2","12|e3|e2","4|c4|a3","8|e3","8|c3|c2","12|b2|b1","4|d4|b3|g#3","8|e3","8|g#3|g#2","8|a3|a2","8|c3","8|a3|a2","8|r","4|a3","8|e4|c#4","4|a3","8|e3","8|e4|c#4","4|a3","8|e4|c#4","4|a3","8|e3","8|e4|c#4","4|a3","8|e4|c#4","4|a3","8|e3","8|a#3|a#2","4|b3|b2","8|d4|e4","4|d4|e4","8|e3","8|d4|e4","4|g#3","8|e4|d4","4|e4|d4","8|e3","8|e4|d4","4|g#3","8|e4|d4","4|e4|d4","8|e3","8|e4|d4","4|g#3","8|e4|d4","4|e4|d4","8|e3","8|c4|c3","4|c#4|c#3","8|e4|c#4","4|e4|c#4","8|e3","8|e4|c#4","4|a3","8|e4","4|a3","8|e3","8|e4","4|a3","8|e4","4|e4","8|e3","8|e4","12|f#2","4|f#3","8|f#2","8|a#3|a#2","12|b3|b2","4|f#3","8|d3","8|r","12|d3|d2","4|e3|e2","8|d3|d2","8|d3|d2","12|e3|e2","4|c#4|a3","8|e3","8|c#4|a3","12|e3","4|b3|g#3","8|e3","8|e3|e2","8|a2|a1","8|e2","4|a2|a1")
 }
-
 
 
 function GameOver {
@@ -1472,10 +1486,11 @@ function DoAGame {
     $cur_tetrominofalldelayms = GetDelaymsForCurrentLevel
 
     # init music
+    $music_intro = ConvertNoteSequenceToFrequencySequence -NoteSequence $music_tico.intro
     $music_ch0 = ConvertNoteSequenceToFrequencySequence -NoteSequence $music_tico.ch0
     $music_ch1 = ConvertNoteSequenceToFrequencySequence -NoteSequence $music_tico.ch1
-    $stream = Create2ChannelStream -Channel0 $music_ch0 -Channel1 $music_ch1
-    PlayMusic -Stream $stream -Loop
+    $WavStream = CreateWavStream -Channel0 $music_ch0 -Channel1 $music_ch1
+    PlayMusic -Stream $WavStream -Loop
 
     # begin loop
     [bool]$updatereq = $true
