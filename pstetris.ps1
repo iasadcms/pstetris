@@ -7,7 +7,7 @@
     Escape == quit
     With music
 
-    $MUSIC_ENABLED = $true|$false
+    $MUSIC_ENABLED = $true|$fakse
 #>
 
 
@@ -750,17 +750,17 @@ function NewGameDataObject {
 
 
 # store data for each game here
-$AllGameData = @{}
+$global:AllGameData = @{}
 [enum]::GetValues([GameType]) | ForEach-Object {
     $rec = NewGameDataObject
     $rec.GameType = $_
     $rec.Name = $_.ToString()
-    $AllGameData[$_] = $rec    
+    $global:AllGameData[$_] = $rec    
 }
-$AllGameData[[GameType]::AGame].Name = "A-Type"
+$global:AllGameData[[GameType]::AGame].Name = "A-Type"
 
 # current game data stored here
-$GameData = $AllGameData[[GameType]::AGame]
+$GameData = $global:AllGameData[[GameType]::AGame]
 
 
 function ResetGameData {
@@ -1748,7 +1748,7 @@ try {
         $menuOption = DoMainMenu
         switch ($menuOption) {
             'AGame' {
-                $GameData = $AllGameData[[GameType]::AGame]
+                $GameData = $global:AllGameData[[GameType]::AGame]
                 try {
                     DoAGame
                 }
