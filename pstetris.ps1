@@ -7,7 +7,7 @@
     Escape == quit
     With music
 
-    $MUSIC_ENABLED = $true|$fakse
+    $MUSIC_ENABLED = $true|$false
 #>
 
 
