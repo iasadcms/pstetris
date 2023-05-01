@@ -16,7 +16,7 @@ $CONBUFF_WIDTH = 36
 $CONBUFF_HEIGHT = 27
 
 # set to $true|$false to enable|disable music
-$MUSIC_ENABLED = $true
+$MUSIC_ENABLED = $false
 
 # colours used for most things
 $FORECOLOUR_BACKGROUND = 'Cyan';        $BACKCOLOUR_BACKGROUND = 'DarkGray'
@@ -1490,11 +1490,13 @@ function DoAGame {
     $cur_tetrominofalldelayms = GetDelaymsForCurrentLevel
 
     # init music
-    $music_intro = ConvertNoteSequenceToFrequencySequence -NoteSequence $music_tico.intro
-    $music_ch0 = ConvertNoteSequenceToFrequencySequence -NoteSequence $music_tico.ch0
-    $music_ch1 = ConvertNoteSequenceToFrequencySequence -NoteSequence $music_tico.ch1
-    $WavStream = CreateWavStream -Channel0 $music_ch0 -Channel1 $music_ch1
-    PlayMusic -Stream $WavStream -Loop
+    if ($MUSIC_ENABLED -eq $true) {
+        $music_intro = ConvertNoteSequenceToFrequencySequence -NoteSequence $music_tico.intro
+        $music_ch0 = ConvertNoteSequenceToFrequencySequence -NoteSequence $music_tico.ch0
+        $music_ch1 = ConvertNoteSequenceToFrequencySequence -NoteSequence $music_tico.ch1
+        $WavStream = CreateWavStream -Channel0 $music_ch0 -Channel1 $music_ch1
+        PlayMusic -Stream $WavStream -Loop
+    }
 
     # begin loop
     [bool]$updatereq = $true
